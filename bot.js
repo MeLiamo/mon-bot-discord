@@ -1,6 +1,5 @@
-const { Client, GatewayIntentBits, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, PermissionFlagsBits } = require('discord.js');
+const { Client, GatewayIntentBits, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, PermissionFlagsBits, ChannelType } = require('discord.js');
 const fs = require('fs');
-
 require('dotenv').config();
 
 const client = new Client({
@@ -22,58 +21,68 @@ const CONFIG = {
   GENERAL_CHANNEL_ID: process.env.GENERAL_CHANNEL_ID,
   RULES_CHANNEL_ID: process.env.RULES_CHANNEL_ID,
   STATS_CATEGORY_ID: process.env.STATS_CATEGORY_ID,
+  TEMP_VOICE_CHANNEL_ID: process.env.TEMP_VOICE_CHANNEL_ID, // Salon "Créer un salon vocal"
+  TEMP_VOICE_CATEGORY_ID: process.env.TEMP_VOICE_CATEGORY_ID, // Catégorie pour les vocaux temporaires
+  VOICE_CONTROL_CHANNEL_ID: process.env.VOICE_CONTROL_CHANNEL_ID, // Salon de contrôle des vocaux
   XP_PER_MESSAGE: 15,
   XP_COOLDOWN: 60000,
   WELCOME_BUTTON_REWARD: 3,
-  UPDATE_STATS_INTERVAL: 60000
+  UPDATE_STATS_INTERVAL: 300000
 };
 
-// Base de données simple (JSON)
+// Shop items
+const SHOP_ITEMS = [
+  { id: 'xp_boost', name: '🚀 Boost XP x2 (1h)', price: 50, type: 'boost' },
+  { id: 'custom_role', name: '🎨 Rôle personnalisé', price: 200, type: 'role' },
+  { id: 'color_name', name: '🌈 Couleur de pseudo', price: 150, type: 'cosmetic' },
+  { id: 'vip_badge', name: '⭐ Badge VIP', price: 300, type: 'badge' }
+];
+
+// Base de données
 let database = {
   users: {},
   welcomeButtons: {},
-  statsChannels: {}
+  statsChannels: {},
+  tempVoiceChannels: {},
+  gameScores: {},
+  purchases: {}
 };
 
-// Charger la base de données
 function loadDatabase() {
   try {
     if (fs.existsSync('database.json')) {
       database = JSON.parse(fs.readFileSync('database.json', 'utf8'));
     }
   } catch (error) {
-    console.error('Erreur lors du chargement de la base de données:', error);
+    console.error('Erreur chargement DB:', error);
   }
 }
 
-// Sauvegarder la base de données
 function saveDatabase() {
   try {
     fs.writeFileSync('database.json', JSON.stringify(database, null, 2));
   } catch (error) {
-    console.error('Erreur lors de la sauvegarde de la base de données:', error);
+    console.error('Erreur sauvegarde DB:', error);
   }
 }
 
-// Initialiser un utilisateur
 function initUser(userId) {
   if (!database.users[userId]) {
     database.users[userId] = {
       xp: 0,
       level: 1,
       rios: 0,
-      lastXpGain: 0
+      lastXpGain: 0,
+      inventory: []
     };
     saveDatabase();
   }
 }
 
-// Calculer l'XP nécessaire pour un niveau
 function getXpForLevel(level) {
-  return level * 100;
+  return Math.floor(100 * Math.pow(level, 1.8));
 }
 
-// Calculer le niveau actuel basé sur l'XP
 function calculateLevel(xp) {
   let level = 1;
   let totalXpNeeded = 0;
@@ -86,7 +95,6 @@ function calculateLevel(xp) {
   return { level, xpForNextLevel: getXpForLevel(level), currentLevelXp: xp - totalXpNeeded };
 }
 
-// Ajouter de l'XP à un utilisateur
 function addXp(userId, amount) {
   initUser(userId);
   
@@ -109,7 +117,6 @@ function addXp(userId, amount) {
   return { leveledUp: false, currentLevelXp, xpForNextLevel };
 }
 
-// Ajouter des rios
 function addRios(userId, amount) {
   initUser(userId);
   database.users[userId].rios += amount;
@@ -118,11 +125,12 @@ function addRios(userId, amount) {
 
 // Bot prêt
 client.once('ready', () => {
-  console.log(`✅ Bot connecté en tant que ${client.user.tag}`);
+  console.log(`✅ Bot connecté: ${client.user.tag}`);
   loadDatabase();
   
   client.guilds.cache.forEach(guild => {
     setupStatsChannels(guild);
+    setupVoiceControlPanel(guild);
   });
   
   setInterval(() => {
@@ -132,27 +140,18 @@ client.once('ready', () => {
   }, CONFIG.UPDATE_STATS_INTERVAL);
 });
 
-// Créer les salons de statistiques
 async function setupStatsChannels(guild) {
   const category = guild.channels.cache.get(CONFIG.STATS_CATEGORY_ID);
-  
-  if (!category || category.type !== 4) {
-    console.log('⚠️ Catégorie de stats non trouvée ou invalide');
-    return;
-  }
+  if (!category || category.type !== 4) return;
   
   if (!database.statsChannels[guild.id]) {
-    database.statsChannels[guild.id] = {
-      categoryId: CONFIG.STATS_CATEGORY_ID
-    };
+    database.statsChannels[guild.id] = { categoryId: CONFIG.STATS_CATEGORY_ID };
     saveDatabase();
   }
   
   updateStatsChannels(guild);
-  console.log('✅ Système de statistiques initialisé');
 }
 
-// Mettre à jour les statistiques
 async function updateStatsChannels(guild) {
   if (!database.statsChannels[guild.id]) return;
   
@@ -160,28 +159,239 @@ async function updateStatsChannels(guild) {
     const category = guild.channels.cache.get(CONFIG.STATS_CATEGORY_ID);
     if (!category) return;
     
-    const voiceCount = guild.members.cache.filter(m => m.voice.channel).size;
     const newName = `Statistique Rio - ${guild.memberCount} membres`;
     
     if (category.name !== newName) {
       await category.setName(newName);
-      console.log(`✅ Stats mises à jour: ${newName}`);
     }
   } catch (error) {
     if (error.code !== 50013 && error.code !== 429) {
-      console.error('❌ Erreur lors de la mise à jour des stats:', error);
+      console.error('Erreur stats:', error);
     }
   }
 }
 
-// Bienvenue aux nouveaux membres
+// Panneau de contrôle vocal
+async function setupVoiceControlPanel(guild) {
+  const controlChannel = guild.channels.cache.get(CONFIG.VOICE_CONTROL_CHANNEL_ID);
+  if (!controlChannel) return;
+  
+  const embed = new EmbedBuilder()
+    .setColor('#00d4ff')
+    .setTitle('🎙️ Contrôle de ton salon vocal')
+    .setDescription('Utilise les boutons ci-dessous pour gérer ton salon vocal temporaire.')
+    .addFields(
+      { name: '🔒 Verrouiller', value: 'Rendre le salon privé', inline: true },
+      { name: '🔓 Déverrouiller', value: 'Rendre le salon public', inline: true },
+      { name: '👥 Limite', value: 'Changer la limite de membres', inline: true },
+      { name: '✏️ Renommer', value: 'Changer le nom du salon', inline: true },
+      { name: '➕ Inviter', value: 'Donner accès à quelqu\'un', inline: true },
+      { name: '🚫 Bannir', value: 'Retirer quelqu\'un', inline: true }
+    );
+  
+  const row1 = new ActionRowBuilder().addComponents(
+    new ButtonBuilder().setCustomId('vc_lock').setLabel('🔒 Verrouiller').setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder().setCustomId('vc_unlock').setLabel('🔓 Déverrouiller').setStyle(ButtonStyle.Success),
+    new ButtonBuilder().setCustomId('vc_limit').setLabel('👥 Limite').setStyle(ButtonStyle.Primary)
+  );
+  
+  const row2 = new ActionRowBuilder().addComponents(
+    new ButtonBuilder().setCustomId('vc_rename').setLabel('✏️ Renommer').setStyle(ButtonStyle.Primary),
+    new ButtonBuilder().setCustomId('vc_invite').setLabel('➕ Inviter').setStyle(ButtonStyle.Success),
+    new ButtonBuilder().setCustomId('vc_kick').setLabel('🚫 Expulser').setStyle(ButtonStyle.Danger)
+  );
+  
+  await controlChannel.send({ embeds: [embed], components: [row1, row2] });
+}
+
+// Création de salons vocaux temporaires
+client.on('voiceStateUpdate', async (oldState, newState) => {
+  // Mise à jour des stats
+  if (oldState.guild) {
+    updateStatsChannels(oldState.guild);
+  }
+  
+  // Création de salon temporaire
+  if (newState.channelId === CONFIG.TEMP_VOICE_CHANNEL_ID) {
+    const guild = newState.guild;
+    const member = newState.member;
+    
+    try {
+      const tempChannel = await guild.channels.create({
+        name: `🎙️ ${member.user.username}`,
+        type: ChannelType.GuildVoice,
+        parent: CONFIG.TEMP_VOICE_CATEGORY_ID,
+        permissionOverwrites: [
+          {
+            id: member.id,
+            allow: [PermissionFlagsBits.ManageChannels, PermissionFlagsBits.MoveMembers]
+          }
+        ]
+      });
+      
+      await member.voice.setChannel(tempChannel);
+      
+      database.tempVoiceChannels[tempChannel.id] = {
+        ownerId: member.id,
+        createdAt: Date.now()
+      };
+      saveDatabase();
+      
+    } catch (error) {
+      console.error('Erreur création vocal:', error);
+    }
+  }
+  
+  // Suppression du salon si vide
+  if (oldState.channel && database.tempVoiceChannels[oldState.channelId]) {
+    if (oldState.channel.members.size === 0) {
+      try {
+        await oldState.channel.delete();
+        delete database.tempVoiceChannels[oldState.channelId];
+        saveDatabase();
+      } catch (error) {
+        console.error('Erreur suppression vocal:', error);
+      }
+    }
+  }
+});
+
+// Gestion des boutons vocaux
+client.on('interactionCreate', async (interaction) => {
+  if (!interaction.isButton()) return;
+  
+  const userId = interaction.user.id;
+  const member = interaction.member;
+  
+  // Bouton bienvenue
+  if (interaction.customId.startsWith('welcome_')) {
+    const [, memberId] = interaction.customId.split('_');
+    const buttonData = database.welcomeButtons[memberId];
+    
+    if (!buttonData) {
+      return interaction.reply({ content: '❌ Bouton expiré.', ephemeral: true });
+    }
+    
+    if (buttonData.claimed) {
+      return interaction.reply({ content: '❌ Déjà réclamé !', ephemeral: true });
+    }
+    
+    if (interaction.user.id === memberId) {
+      return interaction.reply({ content: '❌ Tu ne peux pas te souhaiter la bienvenue !', ephemeral: true });
+    }
+    
+    buttonData.claimed = true;
+    buttonData.claimedBy = userId;
+    addRios(userId, CONFIG.WELCOME_BUTTON_REWARD);
+    saveDatabase();
+    
+    await interaction.update({ components: [] });
+    await interaction.followUp({
+      content: `✅ ${interaction.user} a gagné **${CONFIG.WELCOME_BUTTON_REWARD} rios** !`,
+      ephemeral: false
+    });
+    return;
+  }
+  
+  // Contrôles vocaux
+  if (interaction.customId.startsWith('vc_')) {
+    const voiceChannel = member.voice.channel;
+    
+    if (!voiceChannel) {
+      return interaction.reply({ content: '❌ Tu dois être dans un salon vocal !', ephemeral: true });
+    }
+    
+    const vcData = database.tempVoiceChannels[voiceChannel.id];
+    
+    if (!vcData || vcData.ownerId !== userId) {
+      return interaction.reply({ content: '❌ Ce n\'est pas ton salon vocal !', ephemeral: true });
+    }
+    
+    try {
+      if (interaction.customId === 'vc_lock') {
+        await voiceChannel.permissionOverwrites.edit(interaction.guild.id, {
+          Connect: false
+        });
+        return interaction.reply({ content: '🔒 Salon verrouillé !', ephemeral: true });
+      }
+      
+      if (interaction.customId === 'vc_unlock') {
+        await voiceChannel.permissionOverwrites.edit(interaction.guild.id, {
+          Connect: null
+        });
+        return interaction.reply({ content: '🔓 Salon déverrouillé !', ephemeral: true });
+      }
+      
+      if (interaction.customId === 'vc_limit') {
+        return interaction.reply({ 
+          content: '👥 Envoie un nombre entre 0 et 99 (0 = illimité) dans les 30 secondes :', 
+          ephemeral: true 
+        });
+      }
+      
+      if (interaction.customId === 'vc_rename') {
+        return interaction.reply({ 
+          content: '✏️ Envoie le nouveau nom du salon dans les 30 secondes :', 
+          ephemeral: true 
+        });
+      }
+      
+      if (interaction.customId === 'vc_invite') {
+        return interaction.reply({ 
+          content: '➕ Mentionne la personne à inviter (@user) dans les 30 secondes :', 
+          ephemeral: true 
+        });
+      }
+      
+      if (interaction.customId === 'vc_kick') {
+        return interaction.reply({ 
+          content: '🚫 Mentionne la personne à expulser (@user) dans les 30 secondes :', 
+          ephemeral: true 
+        });
+      }
+      
+    } catch (error) {
+      return interaction.reply({ content: '❌ Erreur lors de l\'opération.', ephemeral: true });
+    }
+  }
+  
+  // Jeu - Pierre Papier Ciseaux
+  if (interaction.customId.startsWith('rps_')) {
+    const choice = interaction.customId.split('_')[1];
+    const choices = ['rock', 'paper', 'scissors'];
+    const botChoice = choices[Math.floor(Math.random() * choices.length)];
+    
+    const emojis = { rock: '🪨', paper: '📄', scissors: '✂️' };
+    
+    let result;
+    if (choice === botChoice) {
+      result = '🤝 Égalité !';
+    } else if (
+      (choice === 'rock' && botChoice === 'scissors') ||
+      (choice === 'paper' && botChoice === 'rock') ||
+      (choice === 'scissors' && botChoice === 'paper')
+    ) {
+      result = '🎉 Tu gagnes ! +10 rios';
+      addRios(userId, 10);
+    } else {
+      result = '😢 Tu perds ! -5 rios';
+      addRios(userId, -5);
+    }
+    
+    return interaction.reply({
+      content: `${emojis[choice]} vs ${emojis[botChoice]}\n${result}`,
+      ephemeral: true
+    });
+  }
+});
+
+// Bienvenue
 client.on('guildMemberAdd', async (member) => {
   const welcomeChannel = member.guild.channels.cache.get(CONFIG.WELCOME_CHANNEL_ID);
-  
   if (!welcomeChannel) return;
   
   const embed = new EmbedBuilder()
-    .setColor('#00ff00')
+    .setColor('#00ff88')
     .setTitle('🎉 Nouveau membre !')
     .setDescription(`Bienvenue ${member} sur le serveur !`)
     .addFields(
@@ -200,63 +410,17 @@ client.on('guildMemberAdd', async (member) => {
   
   const message = await welcomeChannel.send({ embeds: [embed], components: [row] });
   
-  database.welcomeButtons[member.id] = {
-    messageId: message.id,
-    claimed: false
-  };
+  database.welcomeButtons[member.id] = { messageId: message.id, claimed: false };
   saveDatabase();
   
   updateStatsChannels(member.guild);
 });
 
-// Mettre à jour les stats quand quelqu'un quitte
 client.on('guildMemberRemove', (member) => {
   updateStatsChannels(member.guild);
 });
 
-// Mettre à jour les stats lors des changements vocaux
-client.on('voiceStateUpdate', (oldState, newState) => {
-  if (oldState.guild) {
-    updateStatsChannels(oldState.guild);
-  }
-});
-
-// Gestion des boutons
-client.on('interactionCreate', async (interaction) => {
-  if (!interaction.isButton()) return;
-  
-  const [action, memberId] = interaction.customId.split('_');
-  
-  if (action === 'welcome') {
-    const buttonData = database.welcomeButtons[memberId];
-    
-    if (!buttonData) {
-      return interaction.reply({ content: '❌ Bouton expiré.', ephemeral: true });
-    }
-    
-    if (buttonData.claimed) {
-      return interaction.reply({ content: '❌ Quelqu\'un a déjà cliqué sur ce bouton !', ephemeral: true });
-    }
-    
-    if (interaction.user.id === memberId) {
-      return interaction.reply({ content: '❌ Tu ne peux pas souhaiter la bienvenue à toi-même !', ephemeral: true });
-    }
-    
-    buttonData.claimed = true;
-    buttonData.claimedBy = interaction.user.id;
-    addRios(interaction.user.id, CONFIG.WELCOME_BUTTON_REWARD);
-    saveDatabase();
-    
-    await interaction.update({ components: [] });
-    
-    await interaction.followUp({
-      content: `✅ ${interaction.user} a souhaité la bienvenue et a gagné **${CONFIG.WELCOME_BUTTON_REWARD} rios** ! 🎉`,
-      ephemeral: false
-    });
-  }
-});
-
-// Système d'XP et commandes
+// Commandes
 client.on('messageCreate', async (message) => {
   if (message.author.bot) return;
   if (!message.guild) return;
@@ -264,312 +428,276 @@ client.on('messageCreate', async (message) => {
   const userId = message.author.id;
   initUser(userId);
   
-  // Commande !profil ou !stats
+  // !profil
   if (message.content.toLowerCase() === '!profil' || message.content.toLowerCase() === '!stats') {
     const user = database.users[userId];
     const { currentLevelXp, xpForNextLevel } = calculateLevel(user.xp);
     
+    const progressBar = createProgressBar(currentLevelXp, xpForNextLevel);
+    
     const embed = new EmbedBuilder()
-      .setColor('#0099ff')
-      .setTitle(`📊 Profil de ${message.author.username}`)
-      .setThumbnail(message.author.displayAvatarURL({ dynamic: true }))
+      .setColor('#7289da')
+      .setAuthor({ name: `Profil de ${message.author.username}`, iconURL: message.author.displayAvatarURL() })
+      .setThumbnail(message.author.displayAvatarURL({ dynamic: true, size: 256 }))
       .addFields(
-        { name: '📈 Niveau', value: `${user.level}`, inline: true },
-        { name: '💰 Rios', value: `${user.rios}`, inline: true },
-        { name: '⭐ XP Total', value: `${user.xp}`, inline: true },
-        { name: '📊 Progression', value: `${currentLevelXp}/${xpForNextLevel} XP` }
+        { name: '📊 Niveau', value: `\`${user.level}\``, inline: true },
+        { name: '💰 Rios', value: `\`${user.rios}\``, inline: true },
+        { name: '⭐ XP', value: `\`${user.xp}\``, inline: true },
+        { name: '📈 Progression', value: `${progressBar}\n\`${currentLevelXp}/${xpForNextLevel} XP\`` }
       )
+      .setFooter({ text: 'Continue à être actif pour gagner plus d\'XP !' })
       .setTimestamp();
     
     return message.reply({ embeds: [embed] });
   }
   
-  // Commande !say
-  if (message.content.startsWith('!say ')) {
-    if (message.author.id !== CONFIG.OWNER_ID) {
-      return message.reply('❌ Cette commande est réservée au propriétaire du bot.');
+  // !shop
+  if (message.content.toLowerCase() === '!shop') {
+    const user = database.users[userId];
+    
+    let shopText = '';
+    SHOP_ITEMS.forEach((item, index) => {
+      shopText += `**${index + 1}.** ${item.name} - \`${item.price} rios\`\n`;
+    });
+    
+    const embed = new EmbedBuilder()
+      .setColor('#ffd700')
+      .setTitle('🛒 Boutique Rio')
+      .setDescription(`Tes rios : **${user.rios}** 💰\n\n${shopText}`)
+      .setFooter({ text: 'Utilise !buy <numéro> pour acheter' });
+    
+    return message.reply({ embeds: [embed] });
+  }
+  
+  // !buy
+  if (message.content.startsWith('!buy ')) {
+    const itemNumber = parseInt(message.content.split(' ')[1]) - 1;
+    const item = SHOP_ITEMS[itemNumber];
+    const user = database.users[userId];
+    
+    if (!item) {
+      return message.reply('❌ Article invalide ! Utilise `!shop` pour voir la liste.');
     }
     
+    if (user.rios < item.price) {
+      return message.reply(`❌ Tu n'as pas assez de rios ! Il te manque ${item.price - user.rios} rios.`);
+    }
+    
+    user.rios -= item.price;
+    if (!user.inventory) user.inventory = [];
+    user.inventory.push(item.id);
+    saveDatabase();
+    
+    return message.reply(`✅ Tu as acheté **${item.name}** pour ${item.price} rios !`);
+  }
+  
+  // !play
+  if (message.content.toLowerCase() === '!play') {
+    const embed = new EmbedBuilder()
+      .setColor('#ff0066')
+      .setTitle('🎮 Pierre Papier Ciseaux')
+      .setDescription('Choisis ton coup ! Gagne 10 rios, perds 5 rios.');
+    
+    const row = new ActionRowBuilder().addComponents(
+      new ButtonBuilder().setCustomId('rps_rock').setLabel('🪨 Pierre').setStyle(ButtonStyle.Primary),
+      new ButtonBuilder().setCustomId('rps_paper').setLabel('📄 Papier').setStyle(ButtonStyle.Success),
+      new ButtonBuilder().setCustomId('rps_scissors').setLabel('✂️ Ciseaux').setStyle(ButtonStyle.Danger)
+    );
+    
+    return message.reply({ embeds: [embed], components: [row] });
+  }
+  
+  // Commandes de modération et owner (gardées courtes pour économiser l'espace)
+  
+  // !say
+  if (message.content.startsWith('!say ') && message.author.id === CONFIG.OWNER_ID) {
     const content = message.content.slice(5).trim();
-    
-    if (!content) {
-      return message.reply('❌ Usage: `!say <message>`');
-    }
-    
-    try {
-      await message.delete();
-    } catch (error) {
-      console.log('⚠️ Impossible de supprimer le message');
-    }
-    
+    if (!content) return message.reply('❌ Usage: `!say <message>`');
+    try { await message.delete(); } catch {}
     return message.channel.send(content);
   }
   
-  // Commande !sayembed
-  if (message.content.startsWith('!sayembed ')) {
-    if (message.author.id !== CONFIG.OWNER_ID) {
-      return message.reply('❌ Cette commande est réservée au propriétaire du bot.');
-    }
-    
+  // !sayembed
+  if (message.content.startsWith('!sayembed ') && message.author.id === CONFIG.OWNER_ID) {
     const content = message.content.slice(11).trim();
-    
-    if (!content) {
-      return message.reply('❌ Usage: `!sayembed <message>`');
-    }
-    
-    const embed = new EmbedBuilder()
-      .setColor('#5865F2')
-      .setDescription(content)
-      .setTimestamp();
-    
-    try {
-      await message.delete();
-    } catch (error) {
-      console.log('⚠️ Impossible de supprimer le message');
-    }
-    
+    if (!content) return message.reply('❌ Usage: `!sayembed <message>`');
+    const embed = new EmbedBuilder().setColor('#5865F2').setDescription(content).setTimestamp();
+    try { await message.delete(); } catch {}
     return message.channel.send({ embeds: [embed] });
   }
   
-  // Commande !ban
+  // !ban
   if (message.content.startsWith('!ban ')) {
     if (!message.member.permissions.has(PermissionFlagsBits.BanMembers)) {
-      return message.reply('❌ Tu n\'as pas la permission de bannir des membres.');
+      return message.reply('❌ Permission refusée.');
     }
-    
-    const args = message.content.slice(5).trim().split(/ +/);
     const userMention = message.mentions.members.first();
-    
-    if (!userMention) {
-      return message.reply('❌ Usage: `!ban @utilisateur [raison]`');
-    }
-    
-    if (!userMention.bannable) {
-      return message.reply('❌ Je ne peux pas bannir ce membre.');
-    }
-    
-    const reason = args.slice(1).join(' ') || 'Aucune raison fournie';
-    
+    if (!userMention) return message.reply('❌ Usage: `!ban @user [raison]`');
+    if (!userMention.bannable) return message.reply('❌ Impossible de bannir ce membre.');
+    const reason = message.content.split(' ').slice(2).join(' ') || 'Aucune raison';
     try {
       await userMention.ban({ reason });
-      
-      const embed = new EmbedBuilder()
-        .setColor('#ff0000')
-        .setTitle('🔨 Membre banni')
-        .addFields(
-          { name: 'Utilisateur', value: `${userMention.user.tag}`, inline: true },
-          { name: 'Modérateur', value: `${message.author.tag}`, inline: true },
-          { name: 'Raison', value: reason }
-        )
-        .setTimestamp();
-      
-      return message.reply({ embeds: [embed] });
-    } catch (error) {
-      return message.reply('❌ Une erreur est survenue lors du bannissement.');
+      return message.reply(`✅ ${userMention.user.tag} a été banni.`);
+    } catch {
+      return message.reply('❌ Erreur lors du bannissement.');
     }
   }
   
-  // Commande !kick
+  // !kick
   if (message.content.startsWith('!kick ')) {
     if (!message.member.permissions.has(PermissionFlagsBits.KickMembers)) {
-      return message.reply('❌ Tu n\'as pas la permission d\'expulser des membres.');
+      return message.reply('❌ Permission refusée.');
     }
-    
-    const args = message.content.slice(6).trim().split(/ +/);
     const userMention = message.mentions.members.first();
-    
-    if (!userMention) {
-      return message.reply('❌ Usage: `!kick @utilisateur [raison]`');
-    }
-    
-    if (!userMention.kickable) {
-      return message.reply('❌ Je ne peux pas expulser ce membre.');
-    }
-    
-    const reason = args.slice(1).join(' ') || 'Aucune raison fournie';
-    
+    if (!userMention) return message.reply('❌ Usage: `!kick @user [raison]`');
+    if (!userMention.kickable) return message.reply('❌ Impossible d\'expulser ce membre.');
+    const reason = message.content.split(' ').slice(2).join(' ') || 'Aucune raison';
     try {
       await userMention.kick(reason);
-      
-      const embed = new EmbedBuilder()
-        .setColor('#ff9900')
-        .setTitle('👢 Membre expulsé')
-        .addFields(
-          { name: 'Utilisateur', value: `${userMention.user.tag}`, inline: true },
-          { name: 'Modérateur', value: `${message.author.tag}`, inline: true },
-          { name: 'Raison', value: reason }
-        )
-        .setTimestamp();
-      
-      return message.reply({ embeds: [embed] });
-    } catch (error) {
-      return message.reply('❌ Une erreur est survenue lors de l\'expulsion.');
+      return message.reply(`✅ ${userMention.user.tag} a été expulsé.`);
+    } catch {
+      return message.reply('❌ Erreur lors de l\'expulsion.');
     }
   }
   
-  // Commande !mute
+  // !mute
   if (message.content.startsWith('!mute ')) {
     if (!message.member.permissions.has(PermissionFlagsBits.ModerateMembers)) {
-      return message.reply('❌ Tu n\'as pas la permission de mute des membres.');
+      return message.reply('❌ Permission refusée.');
     }
-    
-    const args = message.content.slice(6).trim().split(/ +/);
     const userMention = message.mentions.members.first();
-    
-    if (!userMention) {
-      return message.reply('❌ Usage: `!mute @utilisateur [raison]`');
-    }
-    
-    if (!userMention.moderatable) {
-      return message.reply('❌ Je ne peux pas mute ce membre.');
-    }
-    
-    const reason = args.slice(1).join(' ') || 'Aucune raison fournie';
-    
+    if (!userMention) return message.reply('❌ Usage: `!mute @user [raison]`');
+    const reason = message.content.split(' ').slice(2).join(' ') || 'Aucune raison';
     try {
       await userMention.timeout(28 * 24 * 60 * 60 * 1000, reason);
-      
-      const embed = new EmbedBuilder()
-        .setColor('#ffff00')
-        .setTitle('🔇 Membre muté')
-        .addFields(
-          { name: 'Utilisateur', value: `${userMention.user.tag}`, inline: true },
-          { name: 'Modérateur', value: `${message.author.tag}`, inline: true },
-          { name: 'Durée', value: 'Permanent (28 jours)', inline: true },
-          { name: 'Raison', value: reason }
-        )
-        .setTimestamp();
-      
-      return message.reply({ embeds: [embed] });
-    } catch (error) {
-      return message.reply('❌ Une erreur est survenue lors du mute.');
+      return message.reply(`✅ ${userMention.user.tag} a été mute.`);
+    } catch {
+      return message.reply('❌ Erreur lors du mute.');
     }
   }
   
-  // Commande !tempmute
+  // !tempmute
   if (message.content.startsWith('!tempmute ')) {
     if (!message.member.permissions.has(PermissionFlagsBits.ModerateMembers)) {
-      return message.reply('❌ Tu n\'as pas la permission de mute des membres.');
+      return message.reply('❌ Permission refusée.');
     }
-    
-    const args = message.content.slice(10).trim().split(/ +/);
+    const args = message.content.split(' ');
     const userMention = message.mentions.members.first();
+    if (!userMention || args.length < 3) {
+      return message.reply('❌ Usage: `!tempmute @user <durée> [raison]`\nEx: `!tempmute @user 10m Spam`');
+    }
+    const durationStr = args[2];
+    const match = durationStr.match(/^(\d+)([smhd])$/);
+    if (!match) return message.reply('❌ Format invalide. Ex: 10s, 5m, 2h, 1d');
     
-    if (!userMention || args.length < 2) {
-      return message.reply('❌ Usage: `!tempmute @utilisateur <durée> [raison]`\nExemple: `!tempmute @user 10m Spam`\nDurées: s (secondes), m (minutes), h (heures), d (jours)');
+    const value = parseInt(match[1]);
+    const unit = match[2];
+    let ms;
+    
+    switch (unit) {
+      case 's': ms = value * 1000; break;
+      case 'm': ms = value * 60 * 1000; break;
+      case 'h': ms = value * 60 * 60 * 1000; break;
+      case 'd': ms = value * 24 * 60 * 60 * 1000; break;
     }
     
-    if (!userMention.moderatable) {
-      return message.reply('❌ Je ne peux pas mute ce membre.');
-    }
+    if (ms > 28 * 24 * 60 * 60 * 1000) return message.reply('❌ Maximum 28 jours.');
     
-    const durationStr = args[1];
-    const durationMatch = durationStr.match(/^(\d+)([smhd])$/);
-    
-    if (!durationMatch) {
-      return message.reply('❌ Format de durée invalide. Utilise: 10s, 5m, 2h, 1d');
-    }
-    
-    const durationValue = parseInt(durationMatch[1]);
-    const durationUnit = durationMatch[2];
-    
-    let durationMs;
-    let durationText;
-    
-    switch (durationUnit) {
-      case 's':
-        durationMs = durationValue * 1000;
-        durationText = `${durationValue} seconde${durationValue > 1 ? 's' : ''}`;
-        break;
-      case 'm':
-        durationMs = durationValue * 60 * 1000;
-        durationText = `${durationValue} minute${durationValue > 1 ? 's' : ''}`;
-        break;
-      case 'h':
-        durationMs = durationValue * 60 * 60 * 1000;
-        durationText = `${durationValue} heure${durationValue > 1 ? 's' : ''}`;
-        break;
-      case 'd':
-        durationMs = durationValue * 24 * 60 * 60 * 1000;
-        durationText = `${durationValue} jour${durationValue > 1 ? 's' : ''}`;
-        break;
-    }
-    
-    if (durationMs > 28 * 24 * 60 * 60 * 1000) {
-      return message.reply('❌ La durée maximum est de 28 jours.');
-    }
-    
-    const reason = args.slice(2).join(' ') || 'Aucune raison fournie';
-    
+    const reason = args.slice(3).join(' ') || 'Aucune raison';
     try {
-      await userMention.timeout(durationMs, reason);
-      
-      const embed = new EmbedBuilder()
-        .setColor('#ffaa00')
-        .setTitle('⏱️ Membre temporairement muté')
-        .addFields(
-          { name: 'Utilisateur', value: `${userMention.user.tag}`, inline: true },
-          { name: 'Modérateur', value: `${message.author.tag}`, inline: true },
-          { name: 'Durée', value: durationText, inline: true },
-          { name: 'Raison', value: reason }
-        )
-        .setTimestamp();
-      
-      return message.reply({ embeds: [embed] });
-    } catch (error) {
-      return message.reply('❌ Une erreur est survenue lors du mute temporaire.');
+      await userMention.timeout(ms, reason);
+      return message.reply(`✅ ${userMention.user.tag} a été mute pour ${durationStr}.`);
+    } catch {
+      return message.reply('❌ Erreur lors du mute.');
     }
   }
   
-  // Commande !unmute
+  // !unmute
   if (message.content.startsWith('!unmute ')) {
     if (!message.member.permissions.has(PermissionFlagsBits.ModerateMembers)) {
-      return message.reply('❌ Tu n\'as pas la permission de unmute des membres.');
+      return message.reply('❌ Permission refusée.');
     }
-    
     const userMention = message.mentions.members.first();
-    
-    if (!userMention) {
-      return message.reply('❌ Usage: `!unmute @utilisateur`');
-    }
-    
-    if (!userMention.moderatable) {
-      return message.reply('❌ Je ne peux pas unmute ce membre.');
-    }
-    
+    if (!userMention) return message.reply('❌ Usage: `!unmute @user`');
     try {
       await userMention.timeout(null);
-      
-      const embed = new EmbedBuilder()
-        .setColor('#00ff00')
-        .setTitle('🔊 Membre démuté')
-        .addFields(
-          { name: 'Utilisateur', value: `${userMention.user.tag}`, inline: true },
-          { name: 'Modérateur', value: `${message.author.tag}`, inline: true }
-        )
-        .setTimestamp();
-      
-      return message.reply({ embeds: [embed] });
-    } catch (error) {
-      return message.reply('❌ Une erreur est survenue lors du unmute.');
+      return message.reply(`✅ ${userMention.user.tag} a été unmute.`);
+    } catch {
+      return message.reply('❌ Erreur.');
     }
   }
   
-  // Commande !leaderboard
+  // !leaderboard
   if (message.content.toLowerCase() === '!leaderboard' || message.content.toLowerCase() === '!top') {
     const sortedUsers = Object.entries(database.users)
       .sort(([, a], [, b]) => b.xp - a.xp)
       .slice(0, 10);
     
     let description = '';
-    
     for (let i = 0; i < sortedUsers.length; i++) {
       const [userId, userData] = sortedUsers[i];
       const user = await client.users.fetch(userId).catch(() => null);
-      const username = user ? user.username : 'Utilisateur inconnu';
-      
+      const username = user ? user.username : 'Inconnu';
       const medal = i === 0 ? '🥇' : i === 1 ? '🥈' : i === 2 ? '🥉' : `${i + 1}.`;
-      description += `${medal} **${username}** - Niveau ${userData.level} (${userData.xp} XP) - ${userData.rios} rios\n`;
+      description += `${medal} **${username}** - Niv.${userData.level} (${userData.xp} XP) - ${userData.rios} rios\n`;
+    }
+    
+    const embed = new EmbedBuilder()
+      .setColor('#ffd700')
+      .setTitle('🏆 Classement')
+      .setDescription(description || 'Aucun membre.')
+      .setTimestamp();
+    
+    return message.reply({ embeds: [embed] });
+  }
+  
+  // !help
+  if (message.content.toLowerCase() === '!help' || message.content.toLowerCase() === '!aide') {
+    const embed = new EmbedBuilder()
+      .setColor('#5865F2')
+      .setTitle('📚 Commandes disponibles')
+      .setDescription('Liste de toutes les commandes du bot')
+      .addFields(
+        { name: '🎮 Jeu & Économie', value: '`!play` - Pierre papier ciseaux\n`!shop` - Boutique\n`!buy <n>` - Acheter un article', inline: false },
+        { name: '📊 Profil', value: '`!profil` / `!stats` - Voir ton profil\n`!top` / `!leaderboard` - Classement', inline: false }
+      )
+      .setFooter({ text: 'Utilise les commandes pour interagir avec le bot !' })
+      .setTimestamp();
+    
+    if (message.member.permissions.has(PermissionFlagsBits.BanMembers)) {
+      embed.addFields({ name: '🔨 Modération', value: '`!ban @user [raison]` - Bannir\n`!kick @user [raison]` - Expulser' });
+    }
+    
+    if (message.member.permissions.has(PermissionFlagsBits.ModerateMembers)) {
+      embed.addFields({ 
+        name: '🔇 Mute', 
+        value: '`!mute @user [raison]` - Mute permanent\n`!tempmute @user <durée> [raison]` - Mute temporaire\n`!unmute @user` - Démute' 
+      });
+    }
+    
+    if (message.author.id === CONFIG.OWNER_ID) {
+      embed.addFields({ 
+        name: '👑 Owner', 
+        value: '`!say <message>` - Envoyer un message\n`!sayembed <message>` - Envoyer un embed' 
+      });
+    }
+    
+    return message.reply({ embeds: [embed] });
+  }
+  
+  // !leaderboard
+  if (message.content.toLowerCase() === '!leaderboard' || message.content.toLowerCase() === '!top') {
+    const sortedUsers = Object.entries(database.users)
+      .sort(([, a], [, b]) => b.xp - a.xp)
+      .slice(0, 10);
+    
+    let description = '';
+    for (let i = 0; i < sortedUsers.length; i++) {
+      const [userId, userData] = sortedUsers[i];
+      const user = await client.users.fetch(userId).catch(() => null);
+      const username = user ? user.username : 'Inconnu';
+      const medal = i === 0 ? '🥇' : i === 1 ? '🥈' : i === 2 ? '🥉' : `${i + 1}.`;
+      description += `${medal} **${username}** - Niv.${userData.level} (${userData.xp} XP) - ${userData.rios} rios\n`;
     }
     
     const embed = new EmbedBuilder()
@@ -577,46 +705,6 @@ client.on('messageCreate', async (message) => {
       .setTitle('🏆 Classement des membres')
       .setDescription(description || 'Aucun membre dans le classement.')
       .setTimestamp();
-    
-    return message.reply({ embeds: [embed] });
-  }
-  
-  // Commande !help
-  if (message.content.toLowerCase() === '!help' || message.content.toLowerCase() === '!aide') {
-    const embed = new EmbedBuilder()
-      .setColor('#5865F2')
-      .setTitle('📚 Commandes disponibles')
-      .setDescription('Voici la liste des commandes du bot :')
-      .addFields(
-        { name: '!profil / !stats', value: 'Voir ton profil et tes statistiques' },
-        { name: '!leaderboard / !top', value: 'Voir le classement des membres' },
-        { name: '!help / !aide', value: 'Afficher ce message d\'aide' }
-      )
-      .setFooter({ text: 'Gagne de l\'XP en envoyant des messages !' })
-      .setTimestamp();
-    
-    if (message.member.permissions.has(PermissionFlagsBits.BanMembers)) {
-      embed.addFields({ name: '!ban @user [raison]', value: 'Bannir un membre' });
-    }
-    
-    if (message.member.permissions.has(PermissionFlagsBits.KickMembers)) {
-      embed.addFields({ name: '!kick @user [raison]', value: 'Expulser un membre' });
-    }
-    
-    if (message.member.permissions.has(PermissionFlagsBits.ModerateMembers)) {
-      embed.addFields(
-        { name: '!mute @user [raison]', value: 'Mute un membre (permanent)' },
-        { name: '!tempmute @user <durée> [raison]', value: 'Mute temporaire (ex: 10m, 2h, 1d)' },
-        { name: '!unmute @user', value: 'Démute un membre' }
-      );
-    }
-    
-    if (message.author.id === CONFIG.OWNER_ID) {
-      embed.addFields(
-        { name: '!say <message>', value: '(Owner) Envoyer un message avec le bot' },
-        { name: '!sayembed <message>', value: '(Owner) Envoyer un embed avec le bot' }
-      );
-    }
     
     return message.reply({ embeds: [embed] });
   }
@@ -643,7 +731,7 @@ client.on('messageCreate', async (message) => {
   }
 });
 
-// Serveur web pour Render
+// Serveur web pour Render (empêche la mise en veille)
 const express = require('express');
 const app = express();
 const PORT = process.env.PORT || 3000;
