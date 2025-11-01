@@ -123,6 +123,17 @@ function addRios(userId, amount) {
   saveDatabase();
 }
 
+function createProgressBar(current, max) {
+  const percentage = Math.min((current / max) * 100, 100);
+  const filledBars = Math.round(percentage / 10);
+  const emptyBars = 10 - filledBars;
+  
+  const filled = '█'.repeat(filledBars);
+  const empty = '░'.repeat(emptyBars);
+  
+  return `${filled}${empty} ${percentage.toFixed(1)}%`;
+}
+
 // Bot prêt
 client.once('ready', () => {
   console.log(`✅ Bot connecté: ${client.user.tag}`);
