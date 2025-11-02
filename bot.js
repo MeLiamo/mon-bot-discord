@@ -263,6 +263,8 @@ client.on('voiceStateUpdate', async (oldState, newState) => {
       };
       saveDatabase();
       
+      console.log(`✅ Salon vocal créé pour ${member.user.username} (ID: ${tempChannel.id})`);
+      
     } catch (error) {
       console.error('Erreur création vocal:', error);
     }
@@ -317,9 +319,9 @@ client.on('interactionCreate', async (interaction) => {
       ephemeral: false
     });
     return;
-  }
-  
-  // Contrôles vocaux
+    }
+
+    // Contrôles vocaux
   if (interaction.customId.startsWith('vc_')) {
     const voiceChannel = member.voice.channel;
     
@@ -327,88 +329,106 @@ client.on('interactionCreate', async (interaction) => {
       return interaction.reply({ content: '❌ Tu dois être dans un salon vocal !', ephemeral: true });
     }
     
+    // Vérifier si c'est un salon temporaire
     const vcData = database.tempVoiceChannels[voiceChannel.id];
     
-    if (!vcData || vcData.ownerId !== userId) {
-      return interaction.reply({ content: '❌ Ce n\'est pas ton salon vocal !', ephemeral: true });
+    // Debug pour voir ce qui se passe
+    console.log('Voice Channel ID:', voiceChannel.id);
+    console.log('User ID:', userId);
+    console.log('VCData:', vcData);
+    console.log('Temp Channels:', Object.keys(database.tempVoiceChannels));
+    
+    if (!vcData) {
+      return interaction.reply({ content: '❌ Ce n\'est pas un salon vocal temporaire !', ephemeral: true });
     }
     
-    try {
-      if (interaction.customId === 'vc_lock') {
+    if (vcData.ownerId !== userId) {
+      return interaction.reply({ content: `❌ Ce salon appartient à <@${vcData.ownerId}> !`, ephemeral: true });
+    }
+    
+    if (interaction.customId === 'vc_lock') {
+      try {
         await voiceChannel.permissionOverwrites.edit(interaction.guild.id, {
           Connect: false
         });
         return interaction.reply({ content: '🔒 Salon verrouillé !', ephemeral: true });
+      } catch (error) {
+        console.error('Erreur lock:', error);
+        return interaction.reply({ content: '❌ Erreur lors du verrouillage.', ephemeral: true });
       }
-      
-      if (interaction.customId === 'vc_unlock') {
+    }
+    
+    if (interaction.customId === 'vc_unlock') {
+      try {
         await voiceChannel.permissionOverwrites.edit(interaction.guild.id, {
           Connect: null
         });
         return interaction.reply({ content: '🔓 Salon déverrouillé !', ephemeral: true });
+      } catch (error) {
+        console.error('Erreur unlock:', error);
+        return interaction.reply({ content: '❌ Erreur lors du déverrouillage.', ephemeral: true });
       }
-      
-      if (interaction.customId === 'vc_limit') {
-        const { ModalBuilder, TextInputBuilder, TextInputStyle } = require('discord.js');
-        
-        const modal = new ModalBuilder()
-          .setCustomId('modal_vc_limit')
-          .setTitle('👥 Changer la limite du salon');
-        
-        const limitInput = new TextInputBuilder()
-          .setCustomId('limit_input')
-          .setLabel('Nombre de membres (0 = illimité)')
-          .setStyle(TextInputStyle.Short)
-          .setPlaceholder('Ex: 5')
-          .setRequired(true)
-          .setMinLength(1)
-          .setMaxLength(2);
-        
-        const row = new ActionRowBuilder().addComponents(limitInput);
-        modal.addComponents(row);
-        
-        return interaction.showModal(modal);
-      }
-      
-      if (interaction.customId === 'vc_rename') {
-        const { ModalBuilder, TextInputBuilder, TextInputStyle } = require('discord.js');
-        
-        const modal = new ModalBuilder()
-          .setCustomId('modal_vc_rename')
-          .setTitle('✏️ Renommer le salon');
-        
-        const nameInput = new TextInputBuilder()
-          .setCustomId('name_input')
-          .setLabel('Nouveau nom du salon')
-          .setStyle(TextInputStyle.Short)
-          .setPlaceholder('Ex: 🎮 Gaming Squad')
-          .setRequired(true)
-          .setMinLength(1)
-          .setMaxLength(50);
-        
-        const row = new ActionRowBuilder().addComponents(nameInput);
-        modal.addComponents(row);
-        
-        return interaction.showModal(modal);
-      }
-      
-      if (interaction.customId === 'vc_invite') {
-        return interaction.reply({ 
-          content: '➕ Mentionne la personne à inviter (@user) dans le chat.', 
-          ephemeral: true 
-        });
-      }
-      
-      if (interaction.customId === 'vc_kick') {
-        return interaction.reply({ 
-          content: '🚫 Mentionne la personne à expulser (@user) dans le chat.', 
-          ephemeral: true 
-        });
-      }
-      
-    } catch (error) {
-      return interaction.reply({ content: '❌ Erreur lors de l\'opération.', ephemeral: true });
     }
+    
+    if (interaction.customId === 'vc_limit') {
+      const { ModalBuilder, TextInputBuilder, TextInputStyle } = require('discord.js');
+      
+      const modal = new ModalBuilder()
+        .setCustomId('modal_vc_limit')
+        .setTitle('👥 Changer la limite du salon');
+      
+      const limitInput = new TextInputBuilder()
+        .setCustomId('limit_input')
+        .setLabel('Nombre de membres (0 = illimité)')
+        .setStyle(TextInputStyle.Short)
+        .setPlaceholder('Ex: 5')
+        .setRequired(true)
+        .setMinLength(1)
+        .setMaxLength(2);
+      
+      const row = new ActionRowBuilder().addComponents(limitInput);
+      modal.addComponents(row);
+      
+      return interaction.showModal(modal);
+    }
+    
+    if (interaction.customId === 'vc_rename') {
+      const { ModalBuilder, TextInputBuilder, TextInputStyle } = require('discord.js');
+      
+      const modal = new ModalBuilder()
+        .setCustomId('modal_vc_rename')
+        .setTitle('✏️ Renommer le salon');
+      
+      const nameInput = new TextInputBuilder()
+        .setCustomId('name_input')
+        .setLabel('Nouveau nom du salon')
+        .setStyle(TextInputStyle.Short)
+        .setPlaceholder('Ex: 🎮 Gaming Squad')
+        .setRequired(true)
+        .setMinLength(1)
+        .setMaxLength(50);
+      
+      const row = new ActionRowBuilder().addComponents(nameInput);
+      modal.addComponents(row);
+      
+      return interaction.showModal(modal);
+    }
+    
+    if (interaction.customId === 'vc_invite') {
+      return interaction.reply({ 
+        content: '➕ Mentionne la personne à inviter (@user) dans le chat.', 
+        ephemeral: true 
+      });
+    }
+    
+    if (interaction.customId === 'vc_kick') {
+      return interaction.reply({ 
+        content: '🚫 Mentionne la personne à expulser (@user) dans le chat.', 
+        ephemeral: true 
+      });
+    }
+    
+    return;
   }
 
   // Gestion des modals (fenêtres pop-up)
