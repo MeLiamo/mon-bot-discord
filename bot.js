@@ -433,19 +433,32 @@ client.on('interactionCreate', async (interaction) => {
           return interaction.reply({ content: '❌ Nombre invalide ! Utilise un nombre entre 0 et 99.', ephemeral: true });
         }
         
+        // RÉPONDRE D'ABORD, PUIS MODIFIER
+        await interaction.reply({ content: '⏳ Modification en cours...', ephemeral: true });
+        
         await voiceChannel.setUserLimit(limit);
-        return interaction.reply({ content: `👥 Limite changée : ${limit === 0 ? 'Illimité' : limit + ' membres'}`, ephemeral: true });
+        await interaction.editReply({ content: `✅ Limite changée : ${limit === 0 ? 'Illimité' : limit + ' membres'}` });
       }
       
       if (interaction.customId === 'modal_vc_rename') {
         const newName = interaction.fields.getTextInputValue('name_input');
         
+        // RÉPONDRE D'ABORD, PUIS MODIFIER
+        await interaction.reply({ content: '⏳ Modification en cours...', ephemeral: true });
+        
         await voiceChannel.setName(newName);
-        return interaction.reply({ content: `✏️ Salon renommé en : **${newName}**`, ephemeral: true });
+        await interaction.editReply({ content: `✅ Salon renommé en : **${newName}**` });
       }
       
     } catch (error) {
-      return interaction.reply({ content: '❌ Erreur lors de l\'opération.', ephemeral: true });
+      console.error('Erreur modal:', error);
+      
+      // Vérifier si on peut encore répondre
+      if (!interaction.replied && !interaction.deferred) {
+        return interaction.reply({ content: '❌ Erreur lors de l\'opération.', ephemeral: true });
+      } else {
+        return interaction.editReply({ content: '❌ Erreur lors de l\'opération.' });
+      }
     }
   }
   
