@@ -149,7 +149,10 @@ function createProgressBar(current, max) {
 
 async function updateLeaderboard(guild) {
   const leaderboardChannel = guild.channels.cache.get(CONFIG.LEADERBOARD_CHANNEL_ID);
-  if (!leaderboardChannel) return;
+  if (!leaderboardChannel) {
+    console.log('❌ Salon classement introuvable (ID:', CONFIG.LEADERBOARD_CHANNEL_ID, ')');
+    return;
+  }
   
   try {
     // Récupérer le top 15
@@ -160,10 +163,6 @@ async function updateLeaderboard(guild) {
     const sortedByRios = Object.entries(database.users)
       .sort(([, a], [, b]) => b.rios - a.rios)
       .slice(0, 15);
-    
-    if (sortedByXP.length === 0) {
-      return;
-    }
     
     // Créer le classement XP
     let xpRanking = '';
@@ -209,22 +208,68 @@ async function updateLeaderboard(guild) {
       try {
         const message = await leaderboardChannel.messages.fetch(database.leaderboardMessage);
         await message.edit({ embeds: [embed] });
+        console.log('✅ Classement mis à jour');
       } catch (error) {
-        // Message introuvable, en créer un nouveau
+        console.log('⚠️ Message introuvable, création d\'un nouveau...');
         const newMessage = await leaderboardChannel.send({ embeds: [embed] });
         database.leaderboardMessage = newMessage.id;
         saveDatabase();
+        console.log('✅ Nouveau classement créé (ID:', newMessage.id, ')');
       }
     } else {
       // Créer le premier message
       const newMessage = await leaderboardChannel.send({ embeds: [embed] });
       database.leaderboardMessage = newMessage.id;
       saveDatabase();
+      console.log('✅ Premier classement créé (ID:', newMessage.id, ')');
     }
     
   } catch (error) {
-    console.error('Erreur mise à jour classement:', error);
+    console.error('❌ Erreur mise à jour classement:', error);
   }
+}
+
+async function setupLeaderboard(guild) {
+  const leaderboardChannel = guild.channels.cache.get(CONFIG.LEADERBOARD_CHANNEL_ID);
+  if (!leaderboardChannel) {
+    console.log('❌ Salon classement introuvable');
+    return;
+  }
+  
+  console.log('🔍 Vérification du classement...');
+  
+  // Vérifier si le message existe déjà
+  if (database.leaderboardMessage) {
+    try {
+      const existingMessage = await leaderboardChannel.messages.fetch(database.leaderboardMessage);
+      console.log('✅ Message de classement trouvé, mise à jour...');
+      await updateLeaderboard(guild);
+      return;
+    } catch (error) {
+      console.log('⚠️ Message de classement introuvable, création...');
+      database.leaderboardMessage = null;
+    }
+  }
+  
+  // Vérifier s'il y a déjà un message de classement dans le salon
+  const messages = await leaderboardChannel.messages.fetch({ limit: 10 });
+  const existingPanel = messages.find(msg => 
+    msg.author.id === client.user.id && 
+    msg.embeds.length > 0 && 
+    msg.embeds[0].title === '🏆 CLASSEMENT DU SERVEUR RIO'
+  );
+  
+  if (existingPanel) {
+    console.log('✅ Panneau de classement déjà existant');
+    database.leaderboardMessage = existingPanel.id;
+    saveDatabase();
+    await updateLeaderboard(guild);
+    return;
+  }
+  
+  // Créer le premier message
+  console.log('📊 Création du classement...');
+  await updateLeaderboard(guild);
 }
 
 // Bot prêt
@@ -236,7 +281,7 @@ client.once('ready', () => {
     setupStatsChannels(guild);
     setupVoiceControlPanel(guild);
     setupTicketPanel(guild);
-    updateLeaderboard(guild);
+    setupLeaderboard(guild);
   });
 
   
@@ -1658,6 +1703,40 @@ client.on('messageCreate', async (message) => {
     const targetChannel = botCommandsChannel || message.channel;
     
     targetChannel.send(`🎊 Bravo ${message.author}, tu es monté **niveau ${result.newLevel}** et tu as gagné **${result.riosReward} rios** !`);
+  }
+
+  // !debugleaderboard - Debug complet (OWNER ONLY)
+  if (message.content.toLowerCase() === '!debugleaderboard' && message.author.id === CONFIG.OWNER_ID) {
+    const reply = await message.reply('🔍 **Debug du classement...**');
+    
+    const checks = [];
+    
+    // 1. Vérifier la CONFIG
+    checks.push(`**1. Configuration**`);
+    checks.push(`• LEADERBOARD_CHANNEL_ID: \`${CONFIG.LEADERBOARD_CHANNEL_ID}\``);
+    checks.push(`• Message ID stocké: \`${database.leaderboardMessage || 'Aucun'}\``);
+    
+    // 2. Vérifier le salon
+    const channel = message.guild.channels.cache.get(CONFIG.LEADERBOARD_CHANNEL_ID);
+    checks.push(`\n**2. Salon**`);
+    checks.push(`• Existe: ${channel ? '✅' : '❌'}`);
+    if (channel) {
+      checks.push(`• Nom: ${channel.name}`);
+      checks.push(`• Permissions: ${channel.permissionsFor(message.guild.members.me).has('SendMessages') ? '✅' : '❌'}`);
+    }
+    
+    // 3. Vérifier la base de données
+    const userCount = Object.keys(database.users).length;
+    checks.push(`\n**3. Base de données**`);
+    checks.push(`• Utilisateurs: ${userCount}`);
+    
+    // 4. Forcer la création
+    checks.push(`\n**4. Test de création**`);
+    await setupLeaderboard(message.guild);
+    checks.push(`• Exécuté ✅`);
+    
+    await reply.edit(checks.join('\n'));
+    return;
   }
 });
 
