@@ -27,6 +27,9 @@ const CONFIG = {
   TICKET_CHANNEL_ID: process.env.TICKET_CHANNEL_ID, // Salon où sera le panneau de tickets
   TICKET_CATEGORY_ID: process.env.TICKET_CATEGORY_ID, // Catégorie où seront créés les tickets
   STAFF_ROLE_ID: process.env.STAFF_ROLE_ID, // Rôle du staff
+  BOT_COMMANDS_CHANNEL_ID: process.env.BOT_COMMANDS_CHANNEL_ID,
+  GAMES_CHANNEL_ID: process.env.GAMES_CHANNEL_ID,
+  LEADERBOARD_CHANNEL_ID: process.env.LEADERBOARD_CHANNEL_ID,
   XP_PER_MESSAGE: 15,
   XP_COOLDOWN: 60000,
   WELCOME_BUTTON_REWARD: 3,
@@ -49,7 +52,8 @@ let database = {
   tempVoiceChannels: {},
   gameScores: {},
   purchases: {},
-  tickets: {}
+  tickets: {},
+  leaderboardMessage: null
 };
 
 function loadDatabase() {
@@ -77,10 +81,15 @@ function initUser(userId) {
       level: 1,
       rios: 0,
       lastXpGain: 0,
+      lastDaily: 0,
+      lastWork: 0,
       inventory: []
     };
     saveDatabase();
   }
+  // Ajouter les propriétés manquantes pour les anciens utilisateurs
+  if (!database.users[userId].lastDaily) database.users[userId].lastDaily = 0;
+  if (!database.users[userId].lastWork) database.users[userId].lastWork = 0;
 }
 
 function getXpForLevel(level) {
@@ -138,6 +147,86 @@ function createProgressBar(current, max) {
   return `${filled}${empty} ${percentage.toFixed(1)}%`;
 }
 
+async function updateLeaderboard(guild) {
+  const leaderboardChannel = guild.channels.cache.get(CONFIG.LEADERBOARD_CHANNEL_ID);
+  if (!leaderboardChannel) return;
+  
+  try {
+    // Récupérer le top 15
+    const sortedByXP = Object.entries(database.users)
+      .sort(([, a], [, b]) => b.xp - a.xp)
+      .slice(0, 15);
+    
+    const sortedByRios = Object.entries(database.users)
+      .sort(([, a], [, b]) => b.rios - a.rios)
+      .slice(0, 15);
+    
+    if (sortedByXP.length === 0) {
+      return;
+    }
+    
+    // Créer le classement XP
+    let xpRanking = '';
+    for (let i = 0; i < Math.min(sortedByXP.length, 15); i++) {
+      const [userId, userData] = sortedByXP[i];
+      const user = await guild.members.fetch(userId).catch(() => null);
+      const username = user ? user.user.username : 'Inconnu';
+      const medal = i === 0 ? '🥇' : i === 1 ? '🥈' : i === 2 ? '🥉' : `\`${i + 1}.\``;
+      xpRanking += `${medal} **${username}** - Niv.${userData.level} (${userData.xp} XP)\n`;
+    }
+    
+    // Créer le classement Rios
+    let riosRanking = '';
+    for (let i = 0; i < Math.min(sortedByRios.length, 15); i++) {
+      const [userId, userData] = sortedByRios[i];
+      const user = await guild.members.fetch(userId).catch(() => null);
+      const username = user ? user.user.username : 'Inconnu';
+      const medal = i === 0 ? '🥇' : i === 1 ? '🥈' : i === 2 ? '🥉' : `\`${i + 1}.\``;
+      riosRanking += `${medal} **${username}** - ${userData.rios} 💰\n`;
+    }
+    
+    const embed = new EmbedBuilder()
+      .setColor('#FFD700')
+      .setTitle('🏆 CLASSEMENT DU SERVEUR RIO')
+      .setDescription('Classement mis à jour automatiquement toutes les minutes')
+      .addFields(
+        { 
+          name: '📊 TOP 15 XP', 
+          value: xpRanking || 'Aucun membre', 
+          inline: false 
+        },
+        { 
+          name: '💰 TOP 15 RIOS', 
+          value: riosRanking || 'Aucun membre', 
+          inline: false 
+        }
+      )
+      .setFooter({ text: `Dernière mise à jour` })
+      .setTimestamp();
+    
+    // Si le message existe, le mettre à jour, sinon en créer un nouveau
+    if (database.leaderboardMessage) {
+      try {
+        const message = await leaderboardChannel.messages.fetch(database.leaderboardMessage);
+        await message.edit({ embeds: [embed] });
+      } catch (error) {
+        // Message introuvable, en créer un nouveau
+        const newMessage = await leaderboardChannel.send({ embeds: [embed] });
+        database.leaderboardMessage = newMessage.id;
+        saveDatabase();
+      }
+    } else {
+      // Créer le premier message
+      const newMessage = await leaderboardChannel.send({ embeds: [embed] });
+      database.leaderboardMessage = newMessage.id;
+      saveDatabase();
+    }
+    
+  } catch (error) {
+    console.error('Erreur mise à jour classement:', error);
+  }
+}
+
 // Bot prêt
 client.once('ready', () => {
   console.log(`✅ Bot connecté: ${client.user.tag}`);
@@ -147,13 +236,21 @@ client.once('ready', () => {
     setupStatsChannels(guild);
     setupVoiceControlPanel(guild);
     setupTicketPanel(guild);
+    updateLeaderboard(guild);
   });
+
   
   setInterval(() => {
     client.guilds.cache.forEach(guild => {
       updateStatsChannels(guild);
     });
   }, CONFIG.UPDATE_STATS_INTERVAL);
+
+  setInterval(() => {
+    client.guilds.cache.forEach(guild => {
+      updateLeaderboard(guild);
+    });
+  }, 60000);
 });
 
 async function setupStatsChannels(guild) {
@@ -361,18 +458,31 @@ client.on('interactionCreate', async (interaction) => {
       return interaction.reply({ content: '❌ Tu ne peux pas te souhaiter la bienvenue !', ephemeral: true });
     }
     
+    // Marquer comme réclamé
     buttonData.claimed = true;
     buttonData.claimedBy = userId;
     addRios(userId, CONFIG.WELCOME_BUTTON_REWARD);
     saveDatabase();
     
-    await interaction.update({ components: [] });
-    await interaction.followUp({
-      content: `✅ ${interaction.user} a gagné **${CONFIG.WELCOME_BUTTON_REWARD} rios** !`,
-      ephemeral: false
+    // Désactiver le bouton
+    const disabledButton = new ButtonBuilder()
+      .setCustomId(`welcome_${memberId}_claimed`)
+      .setLabel('✅ Bienvenue souhaitée')
+      .setStyle(ButtonStyle.Secondary)
+      .setDisabled(true);
+    
+    const disabledRow = new ActionRowBuilder().addComponents(disabledButton);
+    
+    // Mettre à jour le message avec le bouton désactivé
+    await interaction.update({ components: [disabledRow] });
+    
+    // Envoyer le message de bienvenue dans le salon
+    await interaction.channel.send({
+      content: `🎊 ${interaction.user} souhaite la bienvenue à <@${memberId}> !\n✨ **Le serveur te souhaite la bienvenue !** ✨\n\n💰 ${interaction.user} a gagné **${CONFIG.WELCOME_BUTTON_REWARD} rios** !`
     });
+    
     return;
-    }
+  }
 
     // Contrôles vocaux
   if (interaction.customId.startsWith('vc_')) {
@@ -485,50 +595,201 @@ client.on('interactionCreate', async (interaction) => {
     }
     
     if (interaction.customId === 'vc_invite') {
-      return interaction.reply({ 
-        content: '➕ Mentionne la personne à inviter (@user) dans le chat.', 
-        ephemeral: true 
-      });
+      const { ModalBuilder, TextInputBuilder, TextInputStyle } = require('discord.js');
+      
+      const modal = new ModalBuilder()
+        .setCustomId('modal_vc_invite')
+        .setTitle('➕ Inviter un membre');
+      
+      const userInput = new TextInputBuilder()
+        .setCustomId('user_input')
+        .setLabel('ID ou pseudo du membre')
+        .setStyle(TextInputStyle.Short)
+        .setPlaceholder('Ex: 123456789 ou @Pseudo')
+        .setRequired(true)
+        .setMinLength(1)
+        .setMaxLength(100);
+      
+      const row = new ActionRowBuilder().addComponents(userInput);
+      modal.addComponents(row);
+      
+      return interaction.showModal(modal);
     }
     
     if (interaction.customId === 'vc_kick') {
-      return interaction.reply({ 
-        content: '🚫 Mentionne la personne à expulser (@user) dans le chat.', 
-        ephemeral: true 
-      });
+      const { ModalBuilder, TextInputBuilder, TextInputStyle } = require('discord.js');
+      
+      const modal = new ModalBuilder()
+        .setCustomId('modal_vc_kick')
+        .setTitle('🚫 Expulser un membre');
+      
+      const userInput = new TextInputBuilder()
+        .setCustomId('user_input')
+        .setLabel('ID ou pseudo du membre')
+        .setStyle(TextInputStyle.Short)
+        .setPlaceholder('Ex: 123456789 ou @Pseudo')
+        .setRequired(true)
+        .setMinLength(1)
+        .setMaxLength(100);
+      
+      const row = new ActionRowBuilder().addComponents(userInput);
+      modal.addComponents(row);
+      
+      return interaction.showModal(modal);
     }
     
     return;
   }
-  
-  // Jeu - Pierre Papier Ciseaux
-  if (interaction.customId.startsWith('rps_')) {
-    const choice = interaction.customId.split('_')[1];
-    const choices = ['rock', 'paper', 'scissors'];
-    const botChoice = choices[Math.floor(Math.random() * choices.length)];
+
+  // Création de tickets
+  if (interaction.customId.startsWith('ticket_')) {
+    const ticketType = interaction.customId.split('_')[1];
     
-    const emojis = { rock: '🪨', paper: '📄', scissors: '✂️' };
+    // Vérifier si l'utilisateur a déjà un ticket ouvert
+    const existingTicket = Object.values(database.tickets).find(t => t.userId === userId && !t.closed);
     
-    let result;
-    if (choice === botChoice) {
-      result = '🤝 Égalité !';
-    } else if (
-      (choice === 'rock' && botChoice === 'scissors') ||
-      (choice === 'paper' && botChoice === 'rock') ||
-      (choice === 'scissors' && botChoice === 'paper')
-    ) {
-      result = '🎉 Tu gagnes ! +10 rios';
-      addRios(userId, 10);
-    } else {
-      result = '😢 Tu perds ! -5 rios';
-      addRios(userId, -5);
+    if (existingTicket) {
+      return interaction.reply({ 
+        content: `❌ Tu as déjà un ticket ouvert : <#${existingTicket.channelId}>`, 
+        ephemeral: true 
+      });
     }
     
-    return interaction.reply({
-      content: `${emojis[choice]} vs ${emojis[botChoice]}\n${result}`,
-      ephemeral: true
-    });
+    await interaction.deferReply({ ephemeral: true });
+    
+    try {
+      const guild = interaction.guild;
+      
+      // Noms et emojis selon le type
+      const types = {
+        support: { name: 'support', emoji: '❓' },
+        tech: { name: 'technique', emoji: '🛠️' },
+        economy: { name: 'economie', emoji: '💰' },
+        report: { name: 'signalement', emoji: '⚠️' },
+        suggestion: { name: 'suggestion', emoji: '💡' },
+        partnership: { name: 'partenariat', emoji: '🎁' }
+      };
+      
+      const ticketInfo = types[ticketType];
+      const ticketNumber = Object.keys(database.tickets).length + 1;
+      
+      // Créer le salon ticket
+      const ticketChannel = await guild.channels.create({
+        name: `${ticketInfo.emoji}・ticket-${ticketNumber}`,
+        type: ChannelType.GuildText,
+        parent: CONFIG.TICKET_CATEGORY_ID,
+        permissionOverwrites: [
+          {
+            id: guild.id,
+            deny: [PermissionFlagsBits.ViewChannel]
+          },
+          {
+            id: userId,
+            allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory]
+          },
+          {
+            id: CONFIG.STAFF_ROLE_ID,
+            allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ManageMessages]
+          }
+        ]
+      });
+      
+      // Message dans le ticket
+      const embed = new EmbedBuilder()
+        .setColor('#5865F2')
+        .setTitle(`${ticketInfo.emoji} Ticket #${ticketNumber} - ${ticketInfo.name.toUpperCase()}`)
+        .setDescription(`Bienvenue ${interaction.user} !\n\nUn membre du staff prendra en charge ton ticket sous peu.\n\n**Type de ticket :** ${ticketInfo.name}\n**Ouvert le :** <t:${Math.floor(Date.now() / 1000)}:F>`)
+        .setFooter({ text: 'Merci de décrire ton problème en détail' })
+        .setTimestamp();
+      
+      const buttons = new ActionRowBuilder().addComponents(
+        new ButtonBuilder().setCustomId('ticket_claim').setLabel('📌 Prendre en charge').setStyle(ButtonStyle.Success),
+        new ButtonBuilder().setCustomId('ticket_close').setLabel('🔒 Fermer le ticket').setStyle(ButtonStyle.Danger)
+      );
+      
+      await ticketChannel.send({ 
+        content: `${interaction.user} | <@&${CONFIG.STAFF_ROLE_ID}>`,
+        embeds: [embed], 
+        components: [buttons] 
+      });
+      
+      // Enregistrer dans la base de données
+      database.tickets[ticketChannel.id] = {
+        channelId: ticketChannel.id,
+        userId: userId,
+        type: ticketType,
+        claimedBy: null,
+        closed: false,
+        createdAt: Date.now()
+      };
+      saveDatabase();
+      
+      return interaction.editReply({ 
+        content: `✅ Ton ticket a été créé : ${ticketChannel}` 
+      });
+      
+    } catch (error) {
+      console.error('Erreur création ticket:', error);
+      return interaction.editReply({ 
+        content: '❌ Erreur lors de la création du ticket.' 
+      });
+    }
   }
+  
+  // Prendre en charge un ticket
+  if (interaction.customId === 'ticket_claim') {
+    const ticketData = database.tickets[interaction.channel.id];
+    
+    if (!ticketData) {
+      return interaction.reply({ content: '❌ Ticket introuvable.', ephemeral: true });
+    }
+    
+    if (ticketData.claimedBy) {
+      return interaction.reply({ 
+        content: `❌ Ce ticket est déjà pris en charge par <@${ticketData.claimedBy}>`, 
+        ephemeral: true 
+      });
+    }
+    
+    ticketData.claimedBy = userId;
+    saveDatabase();
+    
+    const embed = new EmbedBuilder()
+      .setColor('#00ff00')
+      .setDescription(`✅ Ticket pris en charge par ${interaction.user}`)
+      .setTimestamp();
+    
+    await interaction.reply({ embeds: [embed] });
+  }
+  
+  // Fermer un ticket
+  if (interaction.customId === 'ticket_close') {
+    const ticketData = database.tickets[interaction.channel.id];
+    
+    if (!ticketData) {
+      return interaction.reply({ content: '❌ Ticket introuvable.', ephemeral: true });
+    }
+    
+    // Vérifier si c'est le staff ou le créateur
+    if (!interaction.member.roles.cache.has(CONFIG.STAFF_ROLE_ID) && userId !== ticketData.userId) {
+      return interaction.reply({ content: '❌ Seul le staff ou le créateur peut fermer ce ticket.', ephemeral: true });
+    }
+    
+    await interaction.reply({ content: '🔒 Fermeture du ticket dans 5 secondes...' });
+    
+    ticketData.closed = true;
+    saveDatabase();
+    
+    setTimeout(async () => {
+      try {
+        await interaction.channel.delete();
+        delete database.tickets[interaction.channel.id];
+        saveDatabase();
+      } catch (error) {
+        console.error('Erreur fermeture ticket:', error);
+      }
+    }, 5000);
+  } 
 });
 
 // Gestionnaire séparé pour les modals
@@ -550,14 +811,16 @@ client.on('interactionCreate', async (interaction) => {
   }
   
   try {
+    // CORRECTION : Déférer AVANT toute opération
+    await interaction.deferReply({ ephemeral: true });
+    
     if (interaction.customId === 'modal_vc_limit') {
       const limit = parseInt(interaction.fields.getTextInputValue('limit_input'));
       
       if (isNaN(limit) || limit < 0 || limit > 99) {
-        return interaction.reply({ content: '❌ Nombre invalide ! Utilise un nombre entre 0 et 99.', ephemeral: true });
+        return interaction.editReply({ content: '❌ Nombre invalide ! Utilise un nombre entre 0 et 99.' });
       }
       
-      await interaction.deferReply({ ephemeral: true });
       await voiceChannel.setUserLimit(limit);
       return interaction.editReply({ content: `✅ Limite changée : ${limit === 0 ? 'Illimité' : limit + ' membres'}` });
     }
@@ -565,19 +828,102 @@ client.on('interactionCreate', async (interaction) => {
     if (interaction.customId === 'modal_vc_rename') {
       const newName = interaction.fields.getTextInputValue('name_input');
       
-      await interaction.deferReply({ ephemeral: true });
+      if (newName.length < 1 || newName.length > 100) {
+        return interaction.editReply({ content: '❌ Le nom doit faire entre 1 et 100 caractères.' });
+      }
+      
       await voiceChannel.setName(newName);
       return interaction.editReply({ content: `✅ Salon renommé en : **${newName}**` });
+    }
+
+    if (interaction.customId === 'modal_vc_invite') {
+      const userInput = interaction.fields.getTextInputValue('user_input').trim();
+      
+      // Rechercher le membre (par ID, mention ou pseudo)
+      let targetMember;
+      
+      // Si c'est un ID
+      if (/^\d+$/.test(userInput)) {
+        targetMember = await voiceChannel.guild.members.fetch(userInput).catch(() => null);
+      }
+      // Si c'est une mention <@123456>
+      else if (userInput.match(/^<@!?(\d+)>$/)) {
+        const id = userInput.match(/^<@!?(\d+)>$/)[1];
+        targetMember = await voiceChannel.guild.members.fetch(id).catch(() => null);
+      }
+      // Sinon, recherche par pseudo
+      else {
+        targetMember = voiceChannel.guild.members.cache.find(m => 
+          m.user.username.toLowerCase() === userInput.toLowerCase() ||
+          m.displayName.toLowerCase() === userInput.toLowerCase()
+        );
+      }
+      
+      if (!targetMember) {
+        return interaction.editReply({ content: '❌ Membre introuvable ! Vérifie l\'ID ou le pseudo.' });
+      }
+      
+      await voiceChannel.permissionOverwrites.edit(targetMember.id, {
+        Connect: true,
+        ViewChannel: true
+      });
+      
+      return interaction.editReply({ content: `✅ ${targetMember} peut maintenant rejoindre ton salon !` });
+    }
+    
+    if (interaction.customId === 'modal_vc_kick') {
+      const userInput = interaction.fields.getTextInputValue('user_input').trim();
+      
+      // Même logique de recherche que pour l'invitation
+      let targetMember;
+      
+      if (/^\d+$/.test(userInput)) {
+        targetMember = await voiceChannel.guild.members.fetch(userInput).catch(() => null);
+      }
+      else if (userInput.match(/^<@!?(\d+)>$/)) {
+        const id = userInput.match(/^<@!?(\d+)>$/)[1];
+        targetMember = await voiceChannel.guild.members.fetch(id).catch(() => null);
+      }
+      else {
+        targetMember = voiceChannel.guild.members.cache.find(m => 
+          m.user.username.toLowerCase() === userInput.toLowerCase() ||
+          m.displayName.toLowerCase() === userInput.toLowerCase()
+        );
+      }
+      
+      if (!targetMember) {
+        return interaction.editReply({ content: '❌ Membre introuvable ! Vérifie l\'ID ou le pseudo.' });
+      }
+      
+      if (targetMember.id === userId) {
+        return interaction.editReply({ content: '❌ Tu ne peux pas te bannir toi-même !' });
+      }
+      
+      // Retirer les permissions et expulser
+      await voiceChannel.permissionOverwrites.edit(targetMember.id, {
+        Connect: false
+      });
+      
+      // Si le membre est dans le salon, l'expulser
+      if (targetMember.voice.channelId === voiceChannel.id) {
+        await targetMember.voice.disconnect();
+      }
+      
+      return interaction.editReply({ content: `✅ ${targetMember} a été banni du salon !` });
     }
     
   } catch (error) {
     console.error('Erreur modal:', error);
     
-    if (!interaction.replied && !interaction.deferred) {
-      return interaction.reply({ content: '❌ Erreur lors de l\'opération.', ephemeral: true });
-    } else {
-      return interaction.editReply({ content: '❌ Erreur lors de l\'opération.' });
+    // Gestion des erreurs Discord spécifiques
+    if (error.code === 50013) {
+      return interaction.editReply({ content: '❌ Je n\'ai pas les permissions nécessaires.' });
     }
+    if (error.code === 429) {
+      return interaction.editReply({ content: '⏳ Trop de modifications. Réessaye dans quelques minutes.' });
+    }
+    
+    return interaction.editReply({ content: '❌ Erreur lors de l\'opération. Réessaye plus tard.' });
   }
 });
 
@@ -597,23 +943,12 @@ client.on('guildMemberAdd', async (member) => {
     content: `🎉 **Bienvenue ${member} sur le serveur !**\n\n📜 Consulte <#${CONFIG.RULES_CHANNEL_ID}> | 💬 Discute dans <#${CONFIG.GENERAL_CHANNEL_ID}>`,
     components: [row] 
   });
-
-
   
-  database.welcomeButtons[member.id] = { messageId: message.id, claimed: false };
+  database.welcomeButtons[member.id] = { 
+    messageId: message.id, 
+    claimed: false 
+  };
   saveDatabase();
-  
-  // Supprimer le message après 10 secondes
-  setTimeout(async () => {
-    try {
-      await message.delete();
-      // Nettoyer la base de données
-      delete database.welcomeButtons[member.id];
-      saveDatabase();
-    } catch (error) {
-      console.log('Message déjà supprimé ou introuvable');
-    }
-  }, 10000); // 10 secondes
   
   updateStatsChannels(member.guild);
 });
@@ -630,6 +965,11 @@ client.on('messageCreate', async (message) => {
   
   // !profil
   if (message.content.toLowerCase() === '!profil' || message.content.toLowerCase() === '!stats') {
+    // Vérification du salon
+    if (message.channel.id !== CONFIG.BOT_COMMANDS_CHANNEL_ID) {
+      return message.reply(`❌ Cette commande ne fonctionne que dans <#${CONFIG.BOT_COMMANDS_CHANNEL_ID}> !`);
+    }
+    
     const user = database.users[userId];
     const { currentLevelXp, xpForNextLevel } = calculateLevel(user.xp);
     
@@ -653,6 +993,11 @@ client.on('messageCreate', async (message) => {
   
   // !shop
   if (message.content.toLowerCase() === '!shop') {
+    // Vérification du salon
+    if (message.channel.id !== CONFIG.BOT_COMMANDS_CHANNEL_ID) {
+      return message.reply(`❌ Cette commande ne fonctionne que dans <#${CONFIG.BOT_COMMANDS_CHANNEL_ID}> !`);
+    }
+    
     const user = database.users[userId];
     
     let shopText = '';
@@ -671,6 +1016,11 @@ client.on('messageCreate', async (message) => {
   
   // !buy
   if (message.content.startsWith('!buy ')) {
+    // Vérification du salon
+    if (message.channel.id !== CONFIG.BOT_COMMANDS_CHANNEL_ID) {
+      return message.reply(`❌ Cette commande ne fonctionne que dans <#${CONFIG.BOT_COMMANDS_CHANNEL_ID}> !`);
+    }
+    
     const itemNumber = parseInt(message.content.split(' ')[1]) - 1;
     const item = SHOP_ITEMS[itemNumber];
     const user = database.users[userId];
@@ -690,21 +1040,397 @@ client.on('messageCreate', async (message) => {
     
     return message.reply(`✅ Tu as acheté **${item.name}** pour ${item.price} rios !`);
   }
-  
-  // !play
-  if (message.content.toLowerCase() === '!play') {
+
+  // !pen - Jeu de penalty
+  if (message.content.startsWith('!pen ')) {
+    // Vérification du salon
+    if (message.channel.id !== CONFIG.GAMES_CHANNEL_ID) {
+      return message.reply(`❌ Cette commande ne fonctionne que dans <#${CONFIG.GAMES_CHANNEL_ID}> !`);
+    }
+    
+    const args = message.content.split(' ');
+    
+    // Vérification des arguments
+    if (args.length !== 3) {
+      return message.reply('❌ **Usage:** `!pen <montant> <gauche/centre/droite>`\n**Exemple:** `!pen 50 gauche`');
+    }
+    
+    const bet = parseInt(args[1]);
+    const direction = args[2].toLowerCase();
+    
+    // Validation du montant
+    if (isNaN(bet) || bet < 10) {
+      return message.reply('❌ Mise minimale : **10 rios** !');
+    }
+    
+    if (bet > 500) {
+      return message.reply('❌ Mise maximale : **500 rios** !');
+    }
+    
+    const user = database.users[userId];
+    
+    if (user.rios < bet) {
+      return message.reply(`❌ Tu n'as que **${user.rios} rios** ! Il te manque **${bet - user.rios} rios**.`);
+    }
+    
+    // Validation de la direction
+    const validDirections = ['gauche', 'centre', 'droite', 'left', 'center', 'right', 'g', 'c', 'd'];
+    if (!validDirections.includes(direction)) {
+      return message.reply('❌ Direction invalide ! Utilise : **gauche**, **centre** ou **droite**');
+    }
+    
+    // Normaliser la direction
+    let playerChoice;
+    if (['gauche', 'left', 'g'].includes(direction)) playerChoice = 'gauche';
+    else if (['centre', 'center', 'c'].includes(direction)) playerChoice = 'centre';
+    else playerChoice = 'droite';
+    
+    // Le gardien choisit aléatoirement
+    const directions = ['gauche', 'centre', 'droite'];
+    const goalkeeperChoice = directions[Math.floor(Math.random() * directions.length)];
+    
+    const emojis = {
+      gauche: '⬅️',
+      centre: '⏺️',
+      droite: '➡️'
+    };
+    
+    // Message de tir
+    const shootEmbed = new EmbedBuilder()
+      .setColor('#FFD700')
+      .setTitle('⚽ PENALTY !')
+      .setDescription(`${message.author} tire vers **${emojis[playerChoice]} ${playerChoice.toUpperCase()}** !\n\nMise : **${bet} rios**`)
+      .setThumbnail(message.author.displayAvatarURL({ dynamic: true }))
+      .setFooter({ text: 'Le gardien plonge...' })
+      .setTimestamp();
+    
+    const shootMessage = await message.reply({ embeds: [shootEmbed] });
+    
+    // Attendre 3 secondes avant le résultat
+    setTimeout(async () => {
+      let resultEmbed;
+      
+      if (playerChoice === goalkeeperChoice) {
+        // RATÉ - Le gardien a arrêté
+        user.rios -= bet;
+        saveDatabase();
+        
+        resultEmbed = new EmbedBuilder()
+          .setColor('#FF0000')
+          .setTitle('🧤 ARRÊT DU GARDIEN !')
+          .setDescription(`Le gardien plonge vers **${emojis[goalkeeperChoice]} ${goalkeeperChoice.toUpperCase()}** et arrête le ballon !`)
+          .addFields(
+            { name: '❌ Résultat', value: `Tu perds **${bet} rios**`, inline: true },
+            { name: '💰 Solde', value: `${user.rios} rios`, inline: true }
+          )
+          .setThumbnail('https://em-content.zobj.net/source/twitter/348/gloves_1f9e4.png')
+          .setFooter({ text: 'Réessaye avec !pen <montant> <direction>' })
+          .setTimestamp();
+        
+      } else {
+        // BUT - Le gardien s'est trompé
+        const winAmount = bet * 2;
+        user.rios += winAmount;
+        saveDatabase();
+        
+        resultEmbed = new EmbedBuilder()
+          .setColor('#00FF00')
+          .setTitle('⚽ BUUUUUUUT !')
+          .setDescription(`Le gardien plonge vers **${emojis[goalkeeperChoice]} ${goalkeeperChoice.toUpperCase()}** mais tu tires vers **${emojis[playerChoice]} ${playerChoice.toUpperCase()}** !`)
+          .addFields(
+            { name: '✅ Résultat', value: `Tu gagnes **${winAmount} rios** !`, inline: true },
+            { name: '💰 Solde', value: `${user.rios} rios`, inline: true }
+          )
+          .setThumbnail('https://em-content.zobj.net/source/twitter/348/soccer-ball_26bd.png')
+          .setFooter({ text: 'Bravo ! Rejoue avec !pen <montant> <direction>' })
+          .setTimestamp();
+      }
+      
+      await shootMessage.edit({ embeds: [resultEmbed] });
+      
+    }, 3000); // 3 secondes de suspense
+    
+    return;
+  }
+
+   // !chifoumi - Pierre Papier Ciseaux
+  if (message.content.startsWith('!chifoumi ') || message.content.startsWith('!ppc ')) {
+    // Vérification du salon
+    if (message.channel.id !== CONFIG.GAMES_CHANNEL_ID) {
+      return message.reply(`❌ Cette commande ne fonctionne que dans <#${CONFIG.GAMES_CHANNEL_ID}> !`);
+    }
+    
+    const args = message.content.split(' ');
+    
+    // Vérification des arguments
+    if (args.length !== 3) {
+      return message.reply('❌ **Usage:** `!chifoumi <montant> <pierre/papier/ciseaux>`\n**Exemple:** `!chifoumi 50 pierre`');
+    }
+    
+    const bet = parseInt(args[1]);
+    const choice = args[2].toLowerCase();
+    
+    // Validation du montant
+    if (isNaN(bet) || bet < 10) {
+      return message.reply('❌ Mise minimale : **10 rios** !');
+    }
+    
+    if (bet > 500) {
+      return message.reply('❌ Mise maximale : **500 rios** !');
+    }
+    
+    const user = database.users[userId];
+    
+    if (user.rios < bet) {
+      return message.reply(`❌ Tu n'as que **${user.rios} rios** ! Il te manque **${bet - user.rios} rios**.`);
+    }
+    
+    // Validation du choix
+    const validChoices = ['pierre', 'papier', 'ciseaux', 'rock', 'paper', 'scissors', 'p', 'c', 'ci'];
+    if (!validChoices.includes(choice)) {
+      return message.reply('❌ Choix invalide ! Utilise : **pierre**, **papier** ou **ciseaux**');
+    }
+    
+    // Normaliser le choix
+    let playerChoice;
+    if (['pierre', 'rock', 'p'].includes(choice)) playerChoice = 'pierre';
+    else if (['papier', 'paper'].includes(choice)) playerChoice = 'papier';
+    else playerChoice = 'ciseaux';
+    
+    // Le bot choisit aléatoirement
+    const choices = ['pierre', 'papier', 'ciseaux'];
+    const botChoice = choices[Math.floor(Math.random() * choices.length)];
+    
+    const emojis = {
+      pierre: '🪨',
+      papier: '📄',
+      ciseaux: '✂️'
+    };
+    
+    // Message de choix
+    const choiceEmbed = new EmbedBuilder()
+      .setColor('#FFD700')
+      .setTitle('✊ CHIFOUMI !')
+      .setDescription(`${message.author} joue **${emojis[playerChoice]} ${playerChoice.toUpperCase()}** !\n\nMise : **${bet} rios**`)
+      .setThumbnail(message.author.displayAvatarURL({ dynamic: true }))
+      .setFooter({ text: 'Le bot réfléchit...' })
+      .setTimestamp();
+    
+    const choiceMessage = await message.reply({ embeds: [choiceEmbed] });
+    
+    // Attendre 2 secondes avant le résultat
+    setTimeout(async () => {
+      let resultEmbed;
+      
+      // Déterminer le résultat
+      if (playerChoice === botChoice) {
+        // ÉGALITÉ
+        resultEmbed = new EmbedBuilder()
+          .setColor('#FFA500')
+          .setTitle('🤝 ÉGALITÉ !')
+          .setDescription(`Vous avez tous les deux joué **${emojis[playerChoice]} ${playerChoice.toUpperCase()}** !`)
+          .addFields(
+            { name: '↔️ Résultat', value: `Mise remboursée : **${bet} rios**`, inline: true },
+            { name: '💰 Solde', value: `${user.rios} rios`, inline: true }
+          )
+          .setFooter({ text: 'Réessaye avec !chifoumi <montant> <choix>' })
+          .setTimestamp();
+          
+      } else if (
+        (playerChoice === 'pierre' && botChoice === 'ciseaux') ||
+        (playerChoice === 'papier' && botChoice === 'pierre') ||
+        (playerChoice === 'ciseaux' && botChoice === 'papier')
+      ) {
+        // VICTOIRE
+        const winAmount = bet * 2;
+        user.rios += winAmount;
+        saveDatabase();
+        
+        resultEmbed = new EmbedBuilder()
+          .setColor('#00FF00')
+          .setTitle('🎉 VICTOIRE !')
+          .setDescription(`${emojis[playerChoice]} **${playerChoice.toUpperCase()}** bat ${emojis[botChoice]} **${botChoice.toUpperCase()}** !`)
+          .addFields(
+            { name: '✅ Résultat', value: `Tu gagnes **${winAmount} rios** !`, inline: true },
+            { name: '💰 Solde', value: `${user.rios} rios`, inline: true }
+          )
+          .setThumbnail('https://em-content.zobj.net/source/twitter/348/trophy_1f3c6.png')
+          .setFooter({ text: 'Bravo ! Rejoue avec !chifoumi <montant> <choix>' })
+          .setTimestamp();
+          
+      } else {
+        // DÉFAITE
+        user.rios -= bet;
+        saveDatabase();
+        
+        resultEmbed = new EmbedBuilder()
+          .setColor('#FF0000')
+          .setTitle('😢 DÉFAITE !')
+          .setDescription(`${emojis[botChoice]} **${botChoice.toUpperCase()}** bat ${emojis[playerChoice]} **${playerChoice.toUpperCase()}** !`)
+          .addFields(
+            { name: '❌ Résultat', value: `Tu perds **${bet} rios**`, inline: true },
+            { name: '💰 Solde', value: `${user.rios} rios`, inline: true }
+          )
+          .setFooter({ text: 'Réessaye avec !chifoumi <montant> <choix>' })
+          .setTimestamp();
+      }
+      
+      await choiceMessage.edit({ embeds: [resultEmbed] });
+      
+    }, 2000); // 2 secondes de suspense
+    
+    return;
+  }
+
+  // !daily - Récompense quotidienne
+  if (message.content.toLowerCase() === '!daily') {
+    // Vérification du salon
+    if (message.channel.id !== CONFIG.BOT_COMMANDS_CHANNEL_ID) {
+      return message.reply(`❌ Cette commande ne fonctionne que dans <#${CONFIG.BOT_COMMANDS_CHANNEL_ID}> !`);
+    }
+    
+    const user = database.users[userId];
+    const now = Date.now();
+    const cooldown = 24 * 60 * 60 * 1000; // 24 heures
+    
+    if (now - user.lastDaily < cooldown) {
+      const timeLeft = cooldown - (now - user.lastDaily);
+      const hoursLeft = Math.floor(timeLeft / (60 * 60 * 1000));
+      const minutesLeft = Math.floor((timeLeft % (60 * 60 * 1000)) / (60 * 1000));
+      
+      return message.reply(`⏰ Tu as déjà réclamé ta récompense quotidienne !\n⏳ Reviens dans **${hoursLeft}h ${minutesLeft}min**`);
+    }
+    
+    const dailyReward = 100;
+    user.rios += dailyReward;
+    user.lastDaily = now;
+    saveDatabase();
+    
+    return message.reply(`🎁 Tu as réclamé ta récompense quotidienne de **${dailyReward} rios** !\n💰 Nouveau solde : **${user.rios} rios**\n⏰ Reviens demain pour en récupérer plus !`);
+  }
+
+  // !work - Travailler pour gagner des rios
+  if (message.content.toLowerCase() === '!work') {
+    // Vérification du salon
+    if (message.channel.id !== CONFIG.BOT_COMMANDS_CHANNEL_ID) {
+      return message.reply(`❌ Cette commande ne fonctionne que dans <#${CONFIG.BOT_COMMANDS_CHANNEL_ID}> !`);
+    }
+    
+    const user = database.users[userId];
+    const now = Date.now();
+    const cooldown = 60 * 60 * 1000; // 1 heure
+    
+    if (now - user.lastWork < cooldown) {
+      const timeLeft = cooldown - (now - user.lastWork);
+      const minutesLeft = Math.ceil(timeLeft / (60 * 1000));
+      
+      return message.reply(`⏰ Tu es fatigué ! Repose-toi encore **${minutesLeft} minutes**`);
+    }
+    
+    // Jobs aléatoires avec récompenses variables
+    const jobs = [
+      { name: '🍕 Livreur de pizza', min: 30, max: 60 },
+      { name: '🚗 Chauffeur Uber', min: 40, max: 70 },
+      { name: '💼 Consultant', min: 50, max: 100 },
+      { name: '🎨 Designer freelance', min: 35, max: 80 },
+      { name: '🔧 Réparateur', min: 45, max: 85 },
+      { name: '📦 Préparateur de commandes', min: 25, max: 55 },
+      { name: '☕ Barista', min: 30, max: 65 },
+      { name: '🎮 Testeur de jeux', min: 40, max: 90 },
+      { name: '📱 Community Manager', min: 35, max: 75 },
+      { name: '🏋️ Coach sportif', min: 45, max: 95 }
+    ];
+    
+    const job = jobs[Math.floor(Math.random() * jobs.length)];
+    const earned = Math.floor(Math.random() * (job.max - job.min + 1)) + job.min;
+    
+    user.rios += earned;
+    user.lastWork = now;
+    saveDatabase();
+    
+    return message.reply(`${job.name}\nTu as travaillé dur et gagné **${earned} rios** !\n💰 Nouveau solde : **${user.rios} rios**\n⏰ Tu pourras retravailler dans 1 heure`);
+  }
+
+  // !give - Donner des rios à un autre membre
+  if (message.content.startsWith('!give ')) {
+    // Vérification du salon
+    if (message.channel.id !== CONFIG.BOT_COMMANDS_CHANNEL_ID) {
+      return message.reply(`❌ Cette commande ne fonctionne que dans <#${CONFIG.BOT_COMMANDS_CHANNEL_ID}> !`);
+    }
+    
+    const args = message.content.split(' ');
+    
+    if (args.length !== 3) {
+      return message.reply('❌ **Usage:** `!give @user <montant>`\n**Exemple:** `!give @Rio 50`');
+    }
+    
+    const targetUser = message.mentions.users.first();
+    const amount = parseInt(args[2]);
+    
+    if (!targetUser) {
+      return message.reply('❌ Tu dois mentionner un utilisateur valide !');
+    }
+    
+    if (targetUser.id === userId) {
+      return message.reply('❌ Tu ne peux pas te donner des rios à toi-même !');
+    }
+    
+    if (targetUser.bot) {
+      return message.reply('❌ Tu ne peux pas donner des rios à un bot !');
+    }
+    
+    if (isNaN(amount) || amount < 1) {
+      return message.reply('❌ Le montant doit être supérieur ou égal à 1 rio !');
+    }
+    
+    const user = database.users[userId];
+    
+    if (user.rios < amount) {
+      return message.reply(`❌ Tu n'as que **${user.rios} rios** ! Tu ne peux pas donner **${amount} rios**.`);
+    }
+    
+    // Transaction
+    initUser(targetUser.id);
+    user.rios -= amount;
+    database.users[targetUser.id].rios += amount;
+    saveDatabase();
+    
+    return message.reply(`✅ Tu as donné **${amount} rios** à ${targetUser} !\n💰 Ton nouveau solde : **${user.rios} rios**`);
+  }
+
+  // !toprios - Classement des plus riches
+  if (message.content.toLowerCase() === '!toprios') {
+    // Vérification du salon
+    if (message.channel.id !== CONFIG.BOT_COMMANDS_CHANNEL_ID) {
+      return message.reply(`❌ Cette commande ne fonctionne que dans <#${CONFIG.BOT_COMMANDS_CHANNEL_ID}> !`);
+    }
+    
+    const sortedUsers = Object.entries(database.users)
+      .sort(([, a], [, b]) => b.rios - a.rios)
+      .slice(0, 10);
+    
+    if (sortedUsers.length === 0) {
+      return message.reply('❌ Aucun membre dans le classement.');
+    }
+    
+    let description = '**🏆 TOP 10 DES PLUS RICHES 🏆**\n\n';
+    
+    for (let i = 0; i < sortedUsers.length; i++) {
+      const [userId, userData] = sortedUsers[i];
+      const user = await client.users.fetch(userId).catch(() => null);
+      const username = user ? user.username : 'Inconnu';
+      const medal = i === 0 ? '🥇' : i === 1 ? '🥈' : i === 2 ? '🥉' : `${i + 1}.`;
+      description += `${medal} **${username}** - ${userData.rios} rios\n`;
+    }
+    
     const embed = new EmbedBuilder()
-      .setColor('#ff0066')
-      .setTitle('🎮 Pierre Papier Ciseaux')
-      .setDescription('Choisis ton coup ! Gagne 10 rios, perds 5 rios.');
+      .setColor('#FFD700')
+      .setTitle('💰 Classement des Rios')
+      .setDescription(description)
+      .setFooter({ text: 'Gagne plus de rios en jouant et en travaillant !' })
+      .setTimestamp();
     
-    const row = new ActionRowBuilder().addComponents(
-      new ButtonBuilder().setCustomId('rps_rock').setLabel('🪨 Pierre').setStyle(ButtonStyle.Primary),
-      new ButtonBuilder().setCustomId('rps_paper').setLabel('📄 Papier').setStyle(ButtonStyle.Success),
-      new ButtonBuilder().setCustomId('rps_scissors').setLabel('✂️ Ciseaux').setStyle(ButtonStyle.Danger)
-    );
-    
-    return message.reply({ embeds: [embed], components: [row] });
+    return message.reply({ embeds: [embed] });
   }
   
   // Commandes de modération et owner (gardées courtes pour économiser l'espace)
@@ -829,6 +1555,11 @@ client.on('messageCreate', async (message) => {
   
   // !leaderboard
   if (message.content.toLowerCase() === '!leaderboard' || message.content.toLowerCase() === '!top') {
+    // Vérification du salon
+    if (message.channel.id !== CONFIG.BOT_COMMANDS_CHANNEL_ID) {
+      return message.reply(`❌ Cette commande ne fonctionne que dans <#${CONFIG.BOT_COMMANDS_CHANNEL_ID}> !`);
+    }
+    
     const sortedUsers = Object.entries(database.users)
       .sort(([, a], [, b]) => b.xp - a.xp)
       .slice(0, 10);
@@ -858,7 +1589,8 @@ client.on('messageCreate', async (message) => {
       .setTitle('📚 Commandes disponibles')
       .setDescription('Liste de toutes les commandes du bot')
       .addFields(
-        { name: '🎮 Jeu & Économie', value: '`!play` - Pierre papier ciseaux\n`!shop` - Boutique\n`!buy <n>` - Acheter un article', inline: false },
+        { name: '🎮 Jeux', value: '`!pen <montant> <direction>` - Penalty ⚽\n`!chifoumi <montant> <choix>` - Pierre-papier-ciseaux ✊', inline: false },
+        { name: '💰 Économie', value: '`!daily` - Récompense quotidienne (100 rios)\n`!work` - Travailler pour gagner des rios\n`!give @user <montant>` - Donner des rios\n`!toprios` - Top 10 des plus riches\n`!shop` - Boutique\n`!buy <n>` - Acheter', inline: false },
         { name: '📊 Profil', value: '`!profil` / `!stats` - Voir ton profil\n`!top` / `!leaderboard` - Classement', inline: false }
       )
       .setFooter({ text: 'Utilise les commandes pour interagir avec le bot !' })
@@ -918,16 +1650,14 @@ client.on('messageCreate', async (message) => {
   userData.lastXpGain = now;
   const result = addXp(userId, CONFIG.XP_PER_MESSAGE);
   
-  if (result.leveledUp) {
-    const embed = new EmbedBuilder()
-      .setColor('#ffd700')
-      .setTitle('🎊 Niveau supérieur !')
-      .setDescription(`Félicitations ${message.author} ! Tu es maintenant **niveau ${result.newLevel}** !`)
-      .addFields({ name: '🎁 Récompense', value: `+${result.riosReward} rios` })
-      .setThumbnail(message.author.displayAvatarURL({ dynamic: true }))
-      .setTimestamp();
+   if (result.leveledUp) {
+    // Récupérer le salon de commandes bot
+    const botCommandsChannel = message.guild.channels.cache.get(CONFIG.BOT_COMMANDS_CHANNEL_ID);
     
-    message.channel.send({ embeds: [embed] });
+    // Si le salon existe, envoyer là-bas, sinon dans le salon actuel
+    const targetChannel = botCommandsChannel || message.channel;
+    
+    targetChannel.send(`🎊 Bravo ${message.author}, tu es monté **niveau ${result.newLevel}** et tu as gagné **${result.riosReward} rios** !`);
   }
 });
 
