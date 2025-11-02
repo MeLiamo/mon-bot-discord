@@ -187,6 +187,20 @@ async function setupVoiceControlPanel(guild) {
   const controlChannel = guild.channels.cache.get(CONFIG.VOICE_CONTROL_CHANNEL_ID);
   if (!controlChannel) return;
   
+  // Vérifier si le panneau existe déjà
+  const messages = await controlChannel.messages.fetch({ limit: 10 });
+  const existingPanel = messages.find(msg => 
+    msg.author.id === client.user.id && 
+    msg.embeds.length > 0 && 
+    msg.embeds[0].title === '🎙️ Contrôle de ton salon vocal'
+  );
+  
+  // Si le panneau existe déjà, ne pas le recréer
+  if (existingPanel) {
+    console.log('✅ Panneau de contrôle vocal déjà existant');
+    return;
+  }
+  
   const embed = new EmbedBuilder()
     .setColor('#00d4ff')
     .setTitle('🎙️ Contrôle de ton salon vocal')
@@ -213,6 +227,7 @@ async function setupVoiceControlPanel(guild) {
   );
   
   await controlChannel.send({ embeds: [embed], components: [row1, row2] });
+  console.log('✅ Panneau de contrôle vocal créé');
 }
 
 // Création de salons vocaux temporaires
@@ -334,31 +349,99 @@ client.on('interactionCreate', async (interaction) => {
       }
       
       if (interaction.customId === 'vc_limit') {
-        return interaction.reply({ 
-          content: '👥 Envoie un nombre entre 0 et 99 (0 = illimité) dans les 30 secondes :', 
-          ephemeral: true 
-        });
+        const { ModalBuilder, TextInputBuilder, TextInputStyle } = require('discord.js');
+        
+        const modal = new ModalBuilder()
+          .setCustomId('modal_vc_limit')
+          .setTitle('👥 Changer la limite du salon');
+        
+        const limitInput = new TextInputBuilder()
+          .setCustomId('limit_input')
+          .setLabel('Nombre de membres (0 = illimité)')
+          .setStyle(TextInputStyle.Short)
+          .setPlaceholder('Ex: 5')
+          .setRequired(true)
+          .setMinLength(1)
+          .setMaxLength(2);
+        
+        const row = new ActionRowBuilder().addComponents(limitInput);
+        modal.addComponents(row);
+        
+        return interaction.showModal(modal);
       }
       
       if (interaction.customId === 'vc_rename') {
-        return interaction.reply({ 
-          content: '✏️ Envoie le nouveau nom du salon dans les 30 secondes :', 
-          ephemeral: true 
-        });
+        const { ModalBuilder, TextInputBuilder, TextInputStyle } = require('discord.js');
+        
+        const modal = new ModalBuilder()
+          .setCustomId('modal_vc_rename')
+          .setTitle('✏️ Renommer le salon');
+        
+        const nameInput = new TextInputBuilder()
+          .setCustomId('name_input')
+          .setLabel('Nouveau nom du salon')
+          .setStyle(TextInputStyle.Short)
+          .setPlaceholder('Ex: 🎮 Gaming Squad')
+          .setRequired(true)
+          .setMinLength(1)
+          .setMaxLength(50);
+        
+        const row = new ActionRowBuilder().addComponents(nameInput);
+        modal.addComponents(row);
+        
+        return interaction.showModal(modal);
       }
       
       if (interaction.customId === 'vc_invite') {
         return interaction.reply({ 
-          content: '➕ Mentionne la personne à inviter (@user) dans les 30 secondes :', 
+          content: '➕ Mentionne la personne à inviter (@user) dans le chat.', 
           ephemeral: true 
         });
       }
       
       if (interaction.customId === 'vc_kick') {
         return interaction.reply({ 
-          content: '🚫 Mentionne la personne à expulser (@user) dans les 30 secondes :', 
+          content: '🚫 Mentionne la personne à expulser (@user) dans le chat.', 
           ephemeral: true 
         });
+      }
+      
+    } catch (error) {
+      return interaction.reply({ content: '❌ Erreur lors de l\'opération.', ephemeral: true });
+    }
+  }
+
+  // Gestion des modals (fenêtres pop-up)
+  if (interaction.isModalSubmit()) {
+    const voiceChannel = member.voice.channel;
+    
+    if (!voiceChannel) {
+      return interaction.reply({ content: '❌ Tu dois être dans un salon vocal !', ephemeral: true });
+    }
+    
+    const vcData = database.tempVoiceChannels[voiceChannel.id];
+    
+    if (!vcData || vcData.ownerId !== userId) {
+      return interaction.reply({ content: '❌ Ce n\'est pas ton salon vocal !', ephemeral: true });
+    }
+    
+    try {
+      if (interaction.customId === 'modal_vc_limit') {
+        const limit = parseInt(interaction.fields.getTextInputValue('limit_input'));
+        
+        if (isNaN(limit) || limit < 0 || limit > 99) {
+          return interaction.reply({ content: '❌ Nombre invalide ! Utilise un nombre entre 0 et 99.', ephemeral: true });
+        }
+        
+        await voiceChannel.setUserLimit(limit);
+        return interaction.reply({ content: `👥 Limite changée : ${limit === 0 ? 'Illimité' : limit + ' membres'}`, ephemeral: true });
+      }
+      
+      if (interaction.customId === 'modal_vc_rename') {
+        const newName = interaction.fields.getTextInputValue('name_input');
+        
+        await voiceChannel.setName(newName);
+        return interaction.reply({ content: `✏️ Salon renommé en : **${newName}**`, ephemeral: true });
       }
       
     } catch (error) {
