@@ -323,6 +323,11 @@ client.on('interactionCreate', async (interaction) => {
 
     // Contrôles vocaux
   if (interaction.customId.startsWith('vc_')) {
+    // Protection anti-spam : vérifier si l'interaction n'a pas déjà été traitée
+    if (interaction.replied || interaction.deferred) {
+      return;
+    }
+    
     const voiceChannel = member.voice.channel;
     
     if (!voiceChannel) {
@@ -348,25 +353,37 @@ client.on('interactionCreate', async (interaction) => {
     
     if (interaction.customId === 'vc_lock') {
       try {
+        // Déférer la réponse immédiatement
+        await interaction.deferReply({ ephemeral: true });
+        
         await voiceChannel.permissionOverwrites.edit(interaction.guild.id, {
           Connect: false
         });
-        return interaction.reply({ content: '🔒 Salon verrouillé !', ephemeral: true });
+        
+        return interaction.editReply({ content: '🔒 Salon verrouillé !' });
       } catch (error) {
         console.error('Erreur lock:', error);
-        return interaction.reply({ content: '❌ Erreur lors du verrouillage.', ephemeral: true });
+        if (!interaction.replied) {
+          return interaction.editReply({ content: '❌ Erreur lors du verrouillage.' });
+        }
       }
     }
     
     if (interaction.customId === 'vc_unlock') {
       try {
+        // Déférer la réponse immédiatement
+        await interaction.deferReply({ ephemeral: true });
+        
         await voiceChannel.permissionOverwrites.edit(interaction.guild.id, {
           Connect: null
         });
-        return interaction.reply({ content: '🔓 Salon déverrouillé !', ephemeral: true });
+        
+        return interaction.editReply({ content: '🔓 Salon déverrouillé !' });
       } catch (error) {
         console.error('Erreur unlock:', error);
-        return interaction.reply({ content: '❌ Erreur lors du déverrouillage.', ephemeral: true });
+        if (!interaction.replied) {
+          return interaction.editReply({ content: '❌ Erreur lors du déverrouillage.' });
+        }
       }
     }
     
