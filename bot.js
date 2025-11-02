@@ -517,17 +517,6 @@ client.on('guildMemberAdd', async (member) => {
   const welcomeChannel = member.guild.channels.cache.get(CONFIG.WELCOME_CHANNEL_ID);
   if (!welcomeChannel) return;
   
-  const embed = new EmbedBuilder()
-    .setColor('#00ff88')
-    .setTitle('🎉 Nouveau membre !')
-    .setDescription(`Bienvenue ${member} sur le serveur !`)
-    .addFields(
-      { name: '📜 Règles', value: `<#${CONFIG.RULES_CHANNEL_ID}>`, inline: true },
-      { name: '💬 Général', value: `<#${CONFIG.GENERAL_CHANNEL_ID}>`, inline: true }
-    )
-    .setThumbnail(member.user.displayAvatarURL({ dynamic: true }))
-    .setTimestamp();
-  
   const button = new ButtonBuilder()
     .setCustomId(`welcome_${member.id}`)
     .setLabel('🎁 Souhaiter la bienvenue (3 rios)')
@@ -535,15 +524,26 @@ client.on('guildMemberAdd', async (member) => {
   
   const row = new ActionRowBuilder().addComponents(button);
   
-  const message = await welcomeChannel.send({ embeds: [embed], components: [row] });
+  const message = await welcomeChannel.send({ 
+    content: `🎉 **Bienvenue ${member} sur le serveur !**\n\n📜 Consulte <#${CONFIG.RULES_CHANNEL_ID}> | 💬 Discute dans <#${CONFIG.GENERAL_CHANNEL_ID}>`,
+    components: [row] 
+  });
   
   database.welcomeButtons[member.id] = { messageId: message.id, claimed: false };
   saveDatabase();
   
-  updateStatsChannels(member.guild);
-});
-
-client.on('guildMemberRemove', (member) => {
+  // Supprimer le message après 10 secondes
+  setTimeout(async () => {
+    try {
+      await message.delete();
+      // Nettoyer la base de données
+      delete database.welcomeButtons[member.id];
+      saveDatabase();
+    } catch (error) {
+      console.log('Message déjà supprimé ou introuvable');
+    }
+  }, 10000); // 10 secondes
+  
   updateStatsChannels(member.guild);
 });
 
