@@ -24,6 +24,9 @@ const CONFIG = {
   TEMP_VOICE_CHANNEL_ID: process.env.TEMP_VOICE_CHANNEL_ID, // Salon "Créer un salon vocal"
   TEMP_VOICE_CATEGORY_ID: process.env.TEMP_VOICE_CATEGORY_ID, // Catégorie pour les vocaux temporaires
   VOICE_CONTROL_CHANNEL_ID: process.env.VOICE_CONTROL_CHANNEL_ID, // Salon de contrôle des vocaux
+  TICKET_CHANNEL_ID: process.env.TICKET_CHANNEL_ID, // Salon où sera le panneau de tickets
+  TICKET_CATEGORY_ID: process.env.TICKET_CATEGORY_ID, // Catégorie où seront créés les tickets
+  STAFF_ROLE_ID: process.env.STAFF_ROLE_ID, // Rôle du staff
   XP_PER_MESSAGE: 15,
   XP_COOLDOWN: 60000,
   WELCOME_BUTTON_REWARD: 3,
@@ -45,7 +48,8 @@ let database = {
   statsChannels: {},
   tempVoiceChannels: {},
   gameScores: {},
-  purchases: {}
+  purchases: {},
+  tickets: {}
 };
 
 function loadDatabase() {
@@ -142,6 +146,7 @@ client.once('ready', () => {
   client.guilds.cache.forEach(guild => {
     setupStatsChannels(guild);
     setupVoiceControlPanel(guild);
+    setupTicketPanel(guild);
   });
   
   setInterval(() => {
@@ -228,6 +233,54 @@ async function setupVoiceControlPanel(guild) {
   
   await controlChannel.send({ embeds: [embed], components: [row1, row2] });
   console.log('✅ Panneau de contrôle vocal créé');
+}
+
+// Panneau de tickets
+async function setupTicketPanel(guild) {
+  const ticketChannel = guild.channels.cache.get(CONFIG.TICKET_CHANNEL_ID);
+  if (!ticketChannel) return;
+  
+  // Vérifier si le panneau existe déjà
+  const messages = await ticketChannel.messages.fetch({ limit: 10 });
+  const existingPanel = messages.find(msg => 
+    msg.author.id === client.user.id && 
+    msg.embeds.length > 0 && 
+    msg.embeds[0].title === '🎫 Système de Tickets'
+  );
+  
+  if (existingPanel) {
+    console.log('✅ Panneau de tickets déjà existant');
+    return;
+  }
+  
+  const embed = new EmbedBuilder()
+    .setColor('#5865F2')
+    .setTitle('🎫 Système de Tickets')
+    .setDescription('**Besoin d\'aide ?** Ouvre un ticket en cliquant sur l\'un des boutons ci-dessous.\n\nUn salon privé sera créé où seuls toi et le staff pourront communiquer.')
+    .addFields(
+      { name: '❓ Support Général', value: 'Questions générales sur le serveur', inline: true },
+      { name: '🛠️ Support Technique', value: 'Problèmes techniques ou bugs', inline: true },
+      { name: '💰 Support Économie', value: 'Questions sur les rios et le shop', inline: true },
+      { name: '⚠️ Signalement', value: 'Signaler un membre ou un problème', inline: true },
+      { name: '💡 Suggestion', value: 'Proposer une idée pour le serveur', inline: true },
+      { name: '🎁 Partenariat', value: 'Demande de partenariat', inline: true }
+    )
+    .setFooter({ text: 'Un ticket = Un problème. Ne spam pas les tickets !' });
+  
+  const row1 = new ActionRowBuilder().addComponents(
+    new ButtonBuilder().setCustomId('ticket_support').setLabel('❓ Support').setStyle(ButtonStyle.Primary),
+    new ButtonBuilder().setCustomId('ticket_tech').setLabel('🛠️ Technique').setStyle(ButtonStyle.Primary),
+    new ButtonBuilder().setCustomId('ticket_economy').setLabel('💰 Économie').setStyle(ButtonStyle.Success)
+  );
+  
+  const row2 = new ActionRowBuilder().addComponents(
+    new ButtonBuilder().setCustomId('ticket_report').setLabel('⚠️ Signalement').setStyle(ButtonStyle.Danger),
+    new ButtonBuilder().setCustomId('ticket_suggestion').setLabel('💡 Suggestion').setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder().setCustomId('ticket_partnership').setLabel('🎁 Partenariat').setStyle(ButtonStyle.Secondary)
+  );
+  
+  await ticketChannel.send({ embeds: [embed], components: [row1, row2] });
+  console.log('✅ Panneau de tickets créé');
 }
 
 // Création de salons vocaux temporaires
@@ -447,57 +500,6 @@ client.on('interactionCreate', async (interaction) => {
     
     return;
   }
-
-  // Gestion des modals (fenêtres pop-up)
-  if (interaction.isModalSubmit()) {
-    const voiceChannel = member.voice.channel;
-    
-    if (!voiceChannel) {
-      return interaction.reply({ content: '❌ Tu dois être dans un salon vocal !', ephemeral: true });
-    }
-    
-    const vcData = database.tempVoiceChannels[voiceChannel.id];
-    
-    if (!vcData || vcData.ownerId !== userId) {
-      return interaction.reply({ content: '❌ Ce n\'est pas ton salon vocal !', ephemeral: true });
-    }
-    
-    try {
-      if (interaction.customId === 'modal_vc_limit') {
-        const limit = parseInt(interaction.fields.getTextInputValue('limit_input'));
-        
-        if (isNaN(limit) || limit < 0 || limit > 99) {
-          return interaction.reply({ content: '❌ Nombre invalide ! Utilise un nombre entre 0 et 99.', ephemeral: true });
-        }
-        
-        // RÉPONDRE D'ABORD, PUIS MODIFIER
-        await interaction.reply({ content: '⏳ Modification en cours...', ephemeral: true });
-        
-        await voiceChannel.setUserLimit(limit);
-        await interaction.editReply({ content: `✅ Limite changée : ${limit === 0 ? 'Illimité' : limit + ' membres'}` });
-      }
-      
-      if (interaction.customId === 'modal_vc_rename') {
-        const newName = interaction.fields.getTextInputValue('name_input');
-        
-        // RÉPONDRE D'ABORD, PUIS MODIFIER
-        await interaction.reply({ content: '⏳ Modification en cours...', ephemeral: true });
-        
-        await voiceChannel.setName(newName);
-        await interaction.editReply({ content: `✅ Salon renommé en : **${newName}**` });
-      }
-      
-    } catch (error) {
-      console.error('Erreur modal:', error);
-      
-      // Vérifier si on peut encore répondre
-      if (!interaction.replied && !interaction.deferred) {
-        return interaction.reply({ content: '❌ Erreur lors de l\'opération.', ephemeral: true });
-      } else {
-        return interaction.editReply({ content: '❌ Erreur lors de l\'opération.' });
-      }
-    }
-  }
   
   // Jeu - Pierre Papier Ciseaux
   if (interaction.customId.startsWith('rps_')) {
@@ -529,6 +531,56 @@ client.on('interactionCreate', async (interaction) => {
   }
 });
 
+// Gestionnaire séparé pour les modals
+client.on('interactionCreate', async (interaction) => {
+  if (!interaction.isModalSubmit()) return;
+  
+  const userId = interaction.user.id;
+  const member = interaction.member;
+  const voiceChannel = member.voice.channel;
+  
+  if (!voiceChannel) {
+    return interaction.reply({ content: '❌ Tu dois être dans un salon vocal !', ephemeral: true });
+  }
+  
+  const vcData = database.tempVoiceChannels[voiceChannel.id];
+  
+  if (!vcData || vcData.ownerId !== userId) {
+    return interaction.reply({ content: '❌ Ce n\'est pas ton salon vocal !', ephemeral: true });
+  }
+  
+  try {
+    if (interaction.customId === 'modal_vc_limit') {
+      const limit = parseInt(interaction.fields.getTextInputValue('limit_input'));
+      
+      if (isNaN(limit) || limit < 0 || limit > 99) {
+        return interaction.reply({ content: '❌ Nombre invalide ! Utilise un nombre entre 0 et 99.', ephemeral: true });
+      }
+      
+      await interaction.deferReply({ ephemeral: true });
+      await voiceChannel.setUserLimit(limit);
+      return interaction.editReply({ content: `✅ Limite changée : ${limit === 0 ? 'Illimité' : limit + ' membres'}` });
+    }
+    
+    if (interaction.customId === 'modal_vc_rename') {
+      const newName = interaction.fields.getTextInputValue('name_input');
+      
+      await interaction.deferReply({ ephemeral: true });
+      await voiceChannel.setName(newName);
+      return interaction.editReply({ content: `✅ Salon renommé en : **${newName}**` });
+    }
+    
+  } catch (error) {
+    console.error('Erreur modal:', error);
+    
+    if (!interaction.replied && !interaction.deferred) {
+      return interaction.reply({ content: '❌ Erreur lors de l\'opération.', ephemeral: true });
+    } else {
+      return interaction.editReply({ content: '❌ Erreur lors de l\'opération.' });
+    }
+  }
+});
+
 // Bienvenue
 client.on('guildMemberAdd', async (member) => {
   const welcomeChannel = member.guild.channels.cache.get(CONFIG.WELCOME_CHANNEL_ID);
@@ -545,6 +597,8 @@ client.on('guildMemberAdd', async (member) => {
     content: `🎉 **Bienvenue ${member} sur le serveur !**\n\n📜 Consulte <#${CONFIG.RULES_CHANNEL_ID}> | 💬 Discute dans <#${CONFIG.GENERAL_CHANNEL_ID}>`,
     components: [row] 
   });
+
+
   
   database.welcomeButtons[member.id] = { messageId: message.id, claimed: false };
   saveDatabase();
@@ -563,6 +617,8 @@ client.on('guildMemberAdd', async (member) => {
   
   updateStatsChannels(member.guild);
 });
+
+
 
 // Commandes
 client.on('messageCreate', async (message) => {
