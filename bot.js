@@ -815,21 +815,30 @@ client.on('interactionCreate', async (interaction) => {
       return interaction.reply({ content: '❌ Ticket introuvable.', ephemeral: true });
     }
     
-    // Vérifier si c'est le staff ou le créateur
-    if (!interaction.member.roles.cache.has(CONFIG.STAFF_ROLE_ID) && userId !== ticketData.userId) {
-      return interaction.reply({ content: '❌ Seul le staff ou le créateur peut fermer ce ticket.', ephemeral: true });
+    // Vérifier les permissions : Owner, Staff ou Créateur
+    const isOwner = userId === CONFIG.OWNER_ID;
+    const isStaff = interaction.member.roles.cache.has(CONFIG.STAFF_ROLE_ID);
+    const isCreator = userId === ticketData.userId;
+    
+    if (!isOwner && !isStaff && !isCreator) {
+      return interaction.reply({ 
+        content: '❌ Seul le staff, le créateur ou l\'owner peut fermer ce ticket.', 
+        ephemeral: true 
+      });
     }
     
-    await interaction.reply({ content: '🔒 Fermeture du ticket dans 5 secondes...' });
-    
+    // Marquer comme fermé AVANT de répondre
     ticketData.closed = true;
     saveDatabase();
+    
+    await interaction.reply({ content: '🔒 Fermeture du ticket dans 5 secondes...' });
     
     setTimeout(async () => {
       try {
         await interaction.channel.delete();
         delete database.tickets[interaction.channel.id];
         saveDatabase();
+        console.log(`✅ Ticket ${interaction.channel.name} fermé par ${interaction.user.tag}`);
       } catch (error) {
         console.error('Erreur fermeture ticket:', error);
       }
@@ -1153,24 +1162,24 @@ client.on('messageCreate', async (message) => {
     
     // Attendre 3 secondes avant le résultat
     setTimeout(async () => {
-      let resultEmbed;
-      
       if (playerChoice === goalkeeperChoice) {
         // RATÉ - Le gardien a arrêté
         user.rios -= bet;
         saveDatabase();
         
-        resultEmbed = new EmbedBuilder()
+        const resultEmbed = new EmbedBuilder()
           .setColor('#FF0000')
           .setTitle('🧤 ARRÊT DU GARDIEN !')
           .setDescription(`Le gardien plonge vers **${emojis[goalkeeperChoice]} ${goalkeeperChoice.toUpperCase()}** et arrête le ballon !`)
           .addFields(
-            { name: '❌ Résultat', value: `Tu perds **${bet} rios**`, inline: true },
+            { name: '❌ Résultat', value: `${message.author} perd **${bet} rios**`, inline: true },
             { name: '💰 Solde', value: `${user.rios} rios`, inline: true }
           )
           .setThumbnail('https://em-content.zobj.net/source/twitter/348/gloves_1f9e4.png')
           .setFooter({ text: 'Réessaye avec !pen <montant> <direction>' })
           .setTimestamp();
+        
+        await message.channel.send({ embeds: [resultEmbed] });
         
       } else {
         // BUT - Le gardien s'est trompé
@@ -1178,20 +1187,20 @@ client.on('messageCreate', async (message) => {
         user.rios += winAmount;
         saveDatabase();
         
-        resultEmbed = new EmbedBuilder()
+        const resultEmbed = new EmbedBuilder()
           .setColor('#00FF00')
           .setTitle('⚽ BUUUUUUUT !')
-          .setDescription(`Le gardien plonge vers **${emojis[goalkeeperChoice]} ${goalkeeperChoice.toUpperCase()}** mais tu tires vers **${emojis[playerChoice]} ${playerChoice.toUpperCase()}** !`)
+          .setDescription(`Le gardien plonge vers **${emojis[goalkeeperChoice]} ${goalkeeperChoice.toUpperCase()}** mais ${message.author} tire vers **${emojis[playerChoice]} ${playerChoice.toUpperCase()}** !`)
           .addFields(
-            { name: '✅ Résultat', value: `Tu gagnes **${winAmount} rios** !`, inline: true },
+            { name: '✅ Résultat', value: `${message.author} gagne **${winAmount} rios** !`, inline: true },
             { name: '💰 Solde', value: `${user.rios} rios`, inline: true }
           )
           .setThumbnail('https://em-content.zobj.net/source/twitter/348/soccer-ball_26bd.png')
           .setFooter({ text: 'Bravo ! Rejoue avec !pen <montant> <direction>' })
           .setTimestamp();
+        
+        await message.channel.send({ embeds: [resultEmbed] });
       }
-      
-      await shootMessage.edit({ embeds: [resultEmbed] });
       
     }, 3000); // 3 secondes de suspense
     
@@ -1265,21 +1274,21 @@ client.on('messageCreate', async (message) => {
     
     // Attendre 2 secondes avant le résultat
     setTimeout(async () => {
-      let resultEmbed;
-      
       // Déterminer le résultat
       if (playerChoice === botChoice) {
         // ÉGALITÉ
-        resultEmbed = new EmbedBuilder()
+        const resultEmbed = new EmbedBuilder()
           .setColor('#FFA500')
           .setTitle('🤝 ÉGALITÉ !')
-          .setDescription(`Vous avez tous les deux joué **${emojis[playerChoice]} ${playerChoice.toUpperCase()}** !`)
+          .setDescription(`${message.author} et le bot ont joué **${emojis[playerChoice]} ${playerChoice.toUpperCase()}** !`)
           .addFields(
             { name: '↔️ Résultat', value: `Mise remboursée : **${bet} rios**`, inline: true },
             { name: '💰 Solde', value: `${user.rios} rios`, inline: true }
           )
           .setFooter({ text: 'Réessaye avec !chifoumi <montant> <choix>' })
           .setTimestamp();
+        
+        await message.channel.send({ embeds: [resultEmbed] });
           
       } else if (
         (playerChoice === 'pierre' && botChoice === 'ciseaux') ||
@@ -1291,36 +1300,38 @@ client.on('messageCreate', async (message) => {
         user.rios += winAmount;
         saveDatabase();
         
-        resultEmbed = new EmbedBuilder()
+        const resultEmbed = new EmbedBuilder()
           .setColor('#00FF00')
           .setTitle('🎉 VICTOIRE !')
           .setDescription(`${emojis[playerChoice]} **${playerChoice.toUpperCase()}** bat ${emojis[botChoice]} **${botChoice.toUpperCase()}** !`)
           .addFields(
-            { name: '✅ Résultat', value: `Tu gagnes **${winAmount} rios** !`, inline: true },
+            { name: '✅ Résultat', value: `${message.author} gagne **${winAmount} rios** !`, inline: true },
             { name: '💰 Solde', value: `${user.rios} rios`, inline: true }
           )
           .setThumbnail('https://em-content.zobj.net/source/twitter/348/trophy_1f3c6.png')
           .setFooter({ text: 'Bravo ! Rejoue avec !chifoumi <montant> <choix>' })
           .setTimestamp();
+        
+        await message.channel.send({ embeds: [resultEmbed] });
           
       } else {
         // DÉFAITE
         user.rios -= bet;
         saveDatabase();
         
-        resultEmbed = new EmbedBuilder()
+        const resultEmbed = new EmbedBuilder()
           .setColor('#FF0000')
           .setTitle('😢 DÉFAITE !')
           .setDescription(`${emojis[botChoice]} **${botChoice.toUpperCase()}** bat ${emojis[playerChoice]} **${playerChoice.toUpperCase()}** !`)
           .addFields(
-            { name: '❌ Résultat', value: `Tu perds **${bet} rios**`, inline: true },
+            { name: '❌ Résultat', value: `${message.author} perd **${bet} rios**`, inline: true },
             { name: '💰 Solde', value: `${user.rios} rios`, inline: true }
           )
           .setFooter({ text: 'Réessaye avec !chifoumi <montant> <choix>' })
           .setTimestamp();
+        
+        await message.channel.send({ embeds: [resultEmbed] });
       }
-      
-      await choiceMessage.edit({ embeds: [resultEmbed] });
       
     }, 2000); // 2 secondes de suspense
     
