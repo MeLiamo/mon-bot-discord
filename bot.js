@@ -53,7 +53,8 @@ let database = {
   gameScores: {},
   purchases: {},
   tickets: {},
-  leaderboardMessage: null
+  leaderboardMessage: null,
+  warns: {}
 };
 
 function loadDatabase() {
@@ -83,13 +84,17 @@ function initUser(userId) {
       lastXpGain: 0,
       lastDaily: 0,
       lastWork: 0,
-      inventory: []
+      inventory: [],
+      voiceTime: 0, // Temps total en vocal (minutes)
+      voiceJoinedAt: null // Timestamp d'entrée en vocal
     };
     saveDatabase();
   }
   // Ajouter les propriétés manquantes pour les anciens utilisateurs
   if (!database.users[userId].lastDaily) database.users[userId].lastDaily = 0;
   if (!database.users[userId].lastWork) database.users[userId].lastWork = 0;
+  if (!database.users[userId].voiceTime) database.users[userId].voiceTime = 0;
+  if (!database.users[userId].voiceJoinedAt) database.users[userId].voiceJoinedAt = null;
 }
 
 function getXpForLevel(level) {
@@ -229,6 +234,72 @@ async function updateLeaderboard(guild) {
   }
 }
 
+async function randomRioDrop(guild) {
+  try {
+    // Choisir un salon textuel aléatoire (exclure tickets, commandes bot, etc.)
+    const textChannels = guild.channels.cache.filter(c => 
+      c.type === 0 && 
+      c.id !== CONFIG.BOT_COMMANDS_CHANNEL_ID &&
+      c.id !== CONFIG.TICKET_CHANNEL_ID &&
+      c.id !== CONFIG.WELCOME_CHANNEL_ID &&
+      c.id !== CONFIG.LEADERBOARD_CHANNEL_ID &&
+      !c.name.includes('ticket')
+    );
+    
+    if (textChannels.size === 0) return;
+    
+    const randomChannel = textChannels.random();
+    const dropAmount = Math.floor(Math.random() * 100) + 50; // Entre 50 et 150 rios
+    
+    const embed = new EmbedBuilder()
+      .setColor('#FFD700')
+      .setTitle('💰 PLUIE DE RIOS !')
+      .setDescription(`**${dropAmount} rios** viennent d'apparaître !\n\n🎯 **Premier à réagir avec 💰 gagne tout !**`)
+      .setFooter({ text: 'Sois rapide !' })
+      .setTimestamp();
+    
+    const dropMessage = await randomChannel.send({ embeds: [embed] });
+    await dropMessage.react('💰');
+    
+    console.log(`💰 Drop de ${dropAmount} rios dans #${randomChannel.name}`);
+    
+    // Attendre une réaction
+    const filter = (reaction, user) => reaction.emoji.name === '💰' && !user.bot;
+    
+    const collector = dropMessage.createReactionCollector({ filter, max: 1, time: 60000 });
+    
+    collector.on('collect', async (reaction, user) => {
+      initUser(user.id);
+      database.users[user.id].rios += dropAmount;
+      saveDatabase();
+      
+      const winEmbed = new EmbedBuilder()
+        .setColor('#00FF00')
+        .setTitle('🎉 RIOS RÉCUPÉRÉS !')
+        .setDescription(`${user} a récupéré **${dropAmount} rios** !\n\n💰 Nouveau solde : **${database.users[user.id].rios} rios**`)
+        .setTimestamp();
+      
+      await randomChannel.send({ embeds: [winEmbed] });
+      console.log(`✅ ${user.username} a gagné le drop de ${dropAmount} rios`);
+    });
+    
+    collector.on('end', collected => {
+      if (collected.size === 0) {
+        const expiredEmbed = new EmbedBuilder()
+          .setColor('#FF0000')
+          .setDescription('⏰ Personne n\'a récupéré les rios... Ils ont disparu !')
+          .setTimestamp();
+        
+        randomChannel.send({ embeds: [expiredEmbed] });
+        console.log('❌ Drop expiré, personne n\'a réagi');
+      }
+    });
+    
+  } catch (error) {
+    console.error('Erreur drop aléatoire:', error);
+  }
+}
+
 async function setupLeaderboard(guild) {
   const leaderboardChannel = guild.channels.cache.get(CONFIG.LEADERBOARD_CHANNEL_ID);
   if (!leaderboardChannel) {
@@ -272,6 +343,67 @@ async function setupLeaderboard(guild) {
   await updateLeaderboard(guild);
 }
 
+async function randomRioDrop(guild) {
+  try {
+    // Drop uniquement dans le salon général
+    const generalChannel = guild.channels.cache.get(CONFIG.GENERAL_CHANNEL_ID);
+    
+    if (!generalChannel) {
+      console.log('❌ Salon général introuvable pour le drop');
+      return;
+    }
+    
+    const dropAmount = Math.floor(Math.random() * 100) + 50; // Entre 50 et 150 rios
+    
+    const embed = new EmbedBuilder()
+      .setColor('#FFD700')
+      .setTitle('💰 PLUIE DE RIOS !')
+      .setDescription(`**${dropAmount} rios** viennent d'apparaître !\n\n🎯 **Premier à réagir avec 💰 gagne tout !**`)
+      .setFooter({ text: 'Sois rapide !' })
+      .setTimestamp();
+    
+    const dropMessage = await generalChannel.send({ embeds: [embed] });
+    await dropMessage.react('💰');
+    
+    console.log(`💰 Drop de ${dropAmount} rios dans #${generalChannel.name}`);
+    
+    // Attendre une réaction
+    const filter = (reaction, user) => reaction.emoji.name === '💰' && !user.bot;
+    
+    const collector = dropMessage.createReactionCollector({ filter, max: 1, time: 60000 });
+    
+    collector.on('collect', async (reaction, user) => {
+      initUser(user.id);
+      database.users[user.id].rios += dropAmount;
+      saveDatabase();
+      
+      const winEmbed = new EmbedBuilder()
+        .setColor('#00FF00')
+        .setTitle('🎉 RIOS RÉCUPÉRÉS !')
+        .setDescription(`${user} a récupéré **${dropAmount} rios** !\n\n💰 Nouveau solde : **${database.users[user.id].rios} rios**`)
+        .setTimestamp();
+      
+      await generalChannel.send({ embeds: [winEmbed] });
+      console.log(`✅ ${user.username} a gagné le drop de ${dropAmount} rios`);
+    });
+    
+    collector.on('end', collected => {
+      if (collected.size === 0) {
+        const expiredEmbed = new EmbedBuilder()
+          .setColor('#FF0000')
+          .setDescription('⏰ Personne n\'a récupéré les rios... Ils ont disparu !')
+          .setTimestamp();
+        
+        generalChannel.send({ embeds: [expiredEmbed] });
+        console.log('❌ Drop expiré, personne n\'a réagi');
+      }
+    });
+    
+  } catch (error) {
+    console.error('Erreur drop aléatoire:', error);
+  }
+}
+
 // Bot prêt
 client.once('ready', () => {
   console.log(`✅ Bot connecté: ${client.user.tag}`);
@@ -296,6 +428,23 @@ client.once('ready', () => {
       updateLeaderboard(guild);
     });
   }, 60000);
+
+  // Drop aléatoire de rios toutes les 30-60 minutes
+  setInterval(() => {
+    client.guilds.cache.forEach(guild => {
+      // 50% de chance à chaque interval
+      if (Math.random() < 0.5) {
+        randomRioDrop(guild);
+      }
+    });
+  }, 1800000); // 30 minutes
+  
+  // Premier drop après 10 minutes
+  setTimeout(() => {
+    client.guilds.cache.forEach(guild => {
+      randomRioDrop(guild);
+    });
+  }, 600000);
 });
 
 async function setupStatsChannels(guild) {
@@ -425,12 +574,65 @@ async function setupTicketPanel(guild) {
   console.log('✅ Panneau de tickets créé');
 }
 
+
+
 // Création de salons vocaux temporaires
 client.on('voiceStateUpdate', async (oldState, newState) => {
+
+  // ========== SYSTÈME D'XP VOCAL (AJOUTE ICI) ==========
+  const userId = newState.member?.id || oldState.member?.id;
+  
+  // Ignorer les bots
+  if ((newState.member && newState.member.user.bot) || (oldState.member && oldState.member.user.bot)) {
+    // Continue avec le reste du code
+  } else {
+    initUser(userId);
+    const user = database.users[userId];
+    
+    // Membre rejoint un vocal
+    if (!oldState.channelId && newState.channelId) {
+      user.voiceJoinedAt = Date.now();
+      saveDatabase();
+      console.log(`🎤 ${newState.member.user.username} a rejoint un vocal`);
+    }
+    
+    // Membre quitte un vocal
+    if (oldState.channelId && !newState.channelId) {
+      if (user.voiceJoinedAt) {
+        const timeSpent = Math.floor((Date.now() - user.voiceJoinedAt) / 60000); // Minutes
+        
+        if (timeSpent > 0) {
+          user.voiceTime += timeSpent;
+          
+          // XP : 5 XP par minute, avec un maximum de 50 XP par session
+          const xpGained = Math.min(timeSpent * 5, 50);
+          const result = addXp(userId, xpGained);
+          
+          console.log(`🎤 ${oldState.member.user.username} : ${timeSpent}min vocal = +${xpGained} XP`);
+          
+          // Notification si level up
+          if (result.leveledUp) {
+            const botCommandsChannel = newState.guild.channels.cache.get(CONFIG.BOT_COMMANDS_CHANNEL_ID);
+            const targetChannel = botCommandsChannel;
+            
+            if (targetChannel) {
+              targetChannel.send(`🎊 Bravo <@${userId}>, tu es monté **niveau ${result.newLevel}** et tu as gagné **${result.riosReward} rios** ! (Temps vocal récompensé)`);
+            }
+          }
+        }
+        
+        user.voiceJoinedAt = null;
+        saveDatabase();
+      }
+    }
+  }
+
   // Mise à jour des stats
   if (oldState.guild) {
     updateStatsChannels(oldState.guild);
   }
+
+  
   
   // Création de salon temporaire
   if (newState.channelId === CONFIG.TEMP_VOICE_CHANNEL_ID) {
@@ -1017,6 +1219,66 @@ client.on('messageCreate', async (message) => {
   const userId = message.author.id;
   initUser(userId);
   
+  // Ignorer les modérateurs pour l'anti-spam
+  if (!message.member.permissions.has(PermissionFlagsBits.ManageMessages)) {
+    // Créer le cache de spam s'il n'existe pas
+    if (!global.spamCache) {
+      global.spamCache = new Map();
+    }
+    
+    const now = Date.now();
+    
+    if (!global.spamCache.has(userId)) {
+      global.spamCache.set(userId, []);
+    }
+    
+    const userMessages = global.spamCache.get(userId);
+    
+    // Ajouter le message actuel
+    userMessages.push(now);
+    
+    // Garder seulement les messages des 5 dernières secondes
+    const recentMessages = userMessages.filter(timestamp => now - timestamp < 5000);
+    global.spamCache.set(userId, recentMessages);
+    
+    // Si plus de 5 messages en 5 secondes = SPAM
+    if (recentMessages.length > 5) {
+      try {
+        // Supprimer les messages
+        const messagesToDelete = await message.channel.messages.fetch({ limit: 10 });
+        const userMessagesToDelete = messagesToDelete.filter(m => m.author.id === userId);
+        await message.channel.bulkDelete(userMessagesToDelete);
+        
+        // Mute 5 minutes
+        await message.member.timeout(5 * 60 * 1000, 'Spam détecté (auto)');
+        
+        const embed = new EmbedBuilder()
+          .setColor('#FF0000')
+          .setTitle('🚫 SPAM DÉTECTÉ')
+          .setDescription(`${message.author} a été mute **5 minutes** pour spam.`)
+          .setFooter({ text: 'Anti-spam automatique' })
+          .setTimestamp();
+        
+        await message.channel.send({ embeds: [embed] });
+        
+        // Warn automatique
+        if (!database.warns[userId]) database.warns[userId] = [];
+        database.warns[userId].push({
+          id: database.warns[userId].length + 1,
+          moderator: client.user.id,
+          reason: 'Spam automatique détecté',
+          timestamp: now
+        });
+        saveDatabase();
+        
+        global.spamCache.delete(userId);
+        return; // IMPORTANT: Arrêter le traitement du message
+      } catch (error) {
+        console.error('Erreur anti-spam:', error);
+      }
+    }
+  }
+  
   // !profil
   if (message.content.toLowerCase() === '!profil' || message.content.toLowerCase() === '!stats') {
     // Vérification du salon
@@ -1028,6 +1290,7 @@ client.on('messageCreate', async (message) => {
     const { currentLevelXp, xpForNextLevel } = calculateLevel(user.xp);
     
     const progressBar = createProgressBar(currentLevelXp, xpForNextLevel);
+    const voiceHours = (user.voiceTime / 60).toFixed(1);
     
     const embed = new EmbedBuilder()
       .setColor('#7289da')
@@ -1037,6 +1300,7 @@ client.on('messageCreate', async (message) => {
         { name: '📊 Niveau', value: `\`${user.level}\``, inline: true },
         { name: '💰 Rios', value: `\`${user.rios}\``, inline: true },
         { name: '⭐ XP', value: `\`${user.xp}\``, inline: true },
+        { name: '🎤 Temps vocal', value: `\`${voiceHours}h\``, inline: true },
         { name: '📈 Progression', value: `${progressBar}\n\`${currentLevelXp}/${xpForNextLevel} XP\`` }
       )
       .setFooter({ text: 'Continue à être actif pour gagner plus d\'XP !' })
@@ -1488,6 +1752,244 @@ client.on('messageCreate', async (message) => {
     
     return message.reply({ embeds: [embed] });
   }
+
+  // !serverstats - Statistiques complètes du serveur
+  if (message.content.toLowerCase() === '!serverstats') {
+    // Vérification du salon
+    if (message.channel.id !== CONFIG.BOT_COMMANDS_CHANNEL_ID) {
+      return message.reply(`❌ Cette commande ne fonctionne que dans <#${CONFIG.BOT_COMMANDS_CHANNEL_ID}> !`);
+    }
+    
+    const guild = message.guild;
+    
+    // Compter les membres en ligne
+    const onlineMembers = guild.members.cache.filter(m => 
+      m.presence?.status === 'online' || 
+      m.presence?.status === 'idle' || 
+      m.presence?.status === 'dnd'
+    ).size;
+    
+    // Compter les bots
+    const botCount = guild.members.cache.filter(m => m.user.bot).size;
+    const humanCount = guild.memberCount - botCount;
+    
+    // Compter les salons
+    const textChannels = guild.channels.cache.filter(c => c.type === 0).size;
+    const voiceChannels = guild.channels.cache.filter(c => c.type === 2).size;
+    const categories = guild.channels.cache.filter(c => c.type === 4).size;
+    
+    // Statistiques économiques
+    const totalUsers = Object.keys(database.users).length;
+    const totalRios = Object.values(database.users).reduce((sum, u) => sum + u.rios, 0);
+    const totalXP = Object.values(database.users).reduce((sum, u) => sum + u.xp, 0);
+    const avgLevel = totalUsers > 0 ? (Object.values(database.users).reduce((sum, u) => sum + u.level, 0) / totalUsers).toFixed(1) : 0;
+    
+    // Compter les tickets ouverts
+    const openTickets = Object.values(database.tickets).filter(t => !t.closed).length;
+    
+    const embed = new EmbedBuilder()
+      .setColor('#5865F2')
+      .setTitle(`📊 Statistiques de ${guild.name}`)
+      .setThumbnail(guild.iconURL({ dynamic: true, size: 256 }))
+      .addFields(
+        { 
+          name: '👥 Membres', 
+          value: `Total : **${guild.memberCount}**\nHumains : **${humanCount}**\nBots : **${botCount}**\nEn ligne : **${onlineMembers}**`, 
+          inline: true 
+        },
+        { 
+          name: '📁 Salons', 
+          value: `Textuels : **${textChannels}**\nVocaux : **${voiceChannels}**\nCatégories : **${categories}**\nTotal : **${textChannels + voiceChannels}**`, 
+          inline: true 
+        },
+        { 
+          name: '💰 Économie', 
+          value: `Rios en circulation : **${totalRios}**\nUtilisateurs actifs : **${totalUsers}**\nNiveau moyen : **${avgLevel}**\nXP total : **${totalXP}**`, 
+          inline: true 
+        },
+        { 
+          name: '🎫 Support', 
+          value: `Tickets ouverts : **${openTickets}**`, 
+          inline: true 
+        },
+        { 
+          name: '📅 Serveur', 
+          value: `Créé le : <t:${Math.floor(guild.createdTimestamp / 1000)}:D>\nBoosts : **${guild.premiumSubscriptionCount || 0}**`, 
+          inline: true 
+        },
+        { 
+          name: '👑 Propriétaire', 
+          value: `<@${guild.ownerId}>`, 
+          inline: true 
+        }
+      )
+      .setFooter({ text: `ID: ${guild.id}` })
+      .setTimestamp();
+    
+    return message.reply({ embeds: [embed] });
+  }
+
+  // !memberinfo - Informations détaillées sur un membre
+  if (message.content.startsWith('!memberinfo') || message.content.startsWith('!userinfo')) {
+    // Vérification du salon
+    if (message.channel.id !== CONFIG.BOT_COMMANDS_CHANNEL_ID) {
+      return message.reply(`❌ Cette commande ne fonctionne que dans <#${CONFIG.BOT_COMMANDS_CHANNEL_ID}> !`);
+    }
+    
+    const mentionedUser = message.mentions.members.first() || message.member;
+    const user = database.users[mentionedUser.id];
+    
+    if (!user) {
+      return message.reply('❌ Cet utilisateur n\'a pas encore de données.');
+    }
+    
+    // Calculer les stats
+    const { currentLevelXp, xpForNextLevel } = calculateLevel(user.xp);
+    const voiceHours = (user.voiceTime / 60).toFixed(1);
+    
+    // Position dans les classements
+    const sortedByXP = Object.entries(database.users).sort(([, a], [, b]) => b.xp - a.xp);
+    const xpRank = sortedByXP.findIndex(([id]) => id === mentionedUser.id) + 1;
+    
+    const sortedByRios = Object.entries(database.users).sort(([, a], [, b]) => b.rios - a.rios);
+    const riosRank = sortedByRios.findIndex(([id]) => id === mentionedUser.id) + 1;
+    
+    // Rôles (top 3)
+    const roles = mentionedUser.roles.cache
+      .filter(r => r.id !== message.guild.id)
+      .sort((a, b) => b.position - a.position)
+      .first(3)
+      .map(r => r.toString())
+      .join(', ') || 'Aucun rôle';
+    
+    const embed = new EmbedBuilder()
+      .setColor(mentionedUser.displayHexColor || '#5865F2')
+      .setTitle(`📋 Profil de ${mentionedUser.user.username}`)
+      .setThumbnail(mentionedUser.user.displayAvatarURL({ dynamic: true, size: 256 }))
+      .addFields(
+        { 
+          name: '👤 Informations', 
+          value: `ID : \`${mentionedUser.id}\`\nPseudo : ${mentionedUser}\nA rejoint : <t:${Math.floor(mentionedUser.joinedTimestamp / 1000)}:R>\nCompte créé : <t:${Math.floor(mentionedUser.user.createdTimestamp / 1000)}:R>`, 
+          inline: false 
+        },
+        { 
+          name: '📊 Niveau', 
+          value: `**${user.level}** (Rang #${xpRank})\nXP : ${user.xp}\nProgression : ${currentLevelXp}/${xpForNextLevel}`, 
+          inline: true 
+        },
+        { 
+          name: '💰 Rios', 
+          value: `**${user.rios}** (Rang #${riosRank})`, 
+          inline: true 
+        },
+        { 
+          name: '🎤 Temps vocal', 
+          value: `**${voiceHours}h** (${user.voiceTime} min)`, 
+          inline: true 
+        },
+        { 
+          name: '🎭 Rôles principaux', 
+          value: roles, 
+          inline: false 
+        }
+      )
+      .setFooter({ text: `Demandé par ${message.author.username}` })
+      .setTimestamp();
+    
+    return message.reply({ embeds: [embed] });
+  }
+
+  // !voicestats - Statistiques vocales détaillées
+  if (message.content.toLowerCase() === '!voicestats' || message.content.startsWith('!voicestats ')) {
+    if (message.channel.id !== CONFIG.BOT_COMMANDS_CHANNEL_ID) {
+      return message.reply(`❌ Cette commande ne fonctionne que dans <#${CONFIG.BOT_COMMANDS_CHANNEL_ID}> !`);
+    }
+    
+    const targetUser = message.mentions.members.first() || message.member;
+    const user = database.users[targetUser.id];
+    
+    if (!user) {
+      return message.reply('❌ Cet utilisateur n\'a pas encore de données.');
+    }
+    
+    const voiceHours = (user.voiceTime / 60).toFixed(1);
+    const voiceMinutes = user.voiceTime;
+    const voiceDays = (user.voiceTime / 1440).toFixed(2);
+    
+    // Classement vocal
+    const sortedByVoice = Object.entries(database.users)
+      .sort(([, a], [, b]) => b.voiceTime - a.voiceTime);
+    const voiceRank = sortedByVoice.findIndex(([id]) => id === targetUser.id) + 1;
+    
+    // XP gagné via vocal (estimation)
+    const estimatedVoiceXP = Math.floor(user.voiceTime * 5);
+    
+    const embed = new EmbedBuilder()
+      .setColor('#00d4ff')
+      .setTitle(`🎤 Statistiques vocales de ${targetUser.user.username}`)
+      .setThumbnail(targetUser.user.displayAvatarURL({ dynamic: true, size: 256 }))
+      .addFields(
+        { 
+          name: '⏱️ Temps total', 
+          value: `**${voiceHours}h** (${voiceMinutes} minutes)\n📅 Équivalent : **${voiceDays} jours**`, 
+          inline: false 
+        },
+        { 
+          name: '🏆 Classement vocal', 
+          value: `Position : **#${voiceRank}**`, 
+          inline: true 
+        },
+        { 
+          name: '⭐ XP gagné (vocal)', 
+          value: `~**${estimatedVoiceXP} XP**`, 
+          inline: true 
+        },
+        { 
+          name: '📊 Moyenne quotidienne', 
+          value: `~**${(voiceMinutes / 30).toFixed(0)} min/jour**`, 
+          inline: true 
+        }
+      )
+      .setFooter({ text: 'Plus tu restes en vocal, plus tu gagnes d\'XP !' })
+      .setTimestamp();
+    
+    return message.reply({ embeds: [embed] });
+  }
+
+  // !topvoice - Classement vocal
+  if (message.content.toLowerCase() === '!topvoice') {
+    if (message.channel.id !== CONFIG.BOT_COMMANDS_CHANNEL_ID) {
+      return message.reply(`❌ Cette commande ne fonctionne que dans <#${CONFIG.BOT_COMMANDS_CHANNEL_ID}> !`);
+    }
+    
+    const sortedUsers = Object.entries(database.users)
+      .sort(([, a], [, b]) => b.voiceTime - a.voiceTime)
+      .slice(0, 10);
+    
+    if (sortedUsers.length === 0) {
+      return message.reply('❌ Aucun membre dans le classement.');
+    }
+    
+    let description = '**🎤 TOP 10 TEMPS VOCAL 🎤**\n\n';
+    
+    for (let i = 0; i < sortedUsers.length; i++) {
+      const [userId, userData] = sortedUsers[i];
+      const user = await client.users.fetch(userId).catch(() => null);
+      const username = user ? user.username : 'Inconnu';
+      const hours = (userData.voiceTime / 60).toFixed(1);
+      const medal = i === 0 ? '🥇' : i === 1 ? '🥈' : i === 2 ? '🥉' : `${i + 1}.`;
+      description += `${medal} **${username}** - ${hours}h (${userData.voiceTime} min)\n`;
+    }
+    
+    const embed = new EmbedBuilder()
+      .setColor('#00d4ff')
+      .setTitle('🎤 Classement Vocal')
+      .setDescription(description)
+      .setFooter({ text: 'Continue à être actif en vocal pour grimper !' })
+      .setTimestamp();
+    
+    return message.reply({ embeds: [embed] });
+  }
   
   // Commandes de modération et owner (gardées courtes pour économiser l'espace)
   
@@ -1638,40 +2140,55 @@ client.on('messageCreate', async (message) => {
     return message.reply({ embeds: [embed] });
   }
   
-  // !help
-  if (message.content.toLowerCase() === '!help' || message.content.toLowerCase() === '!aide') {
-    const embed = new EmbedBuilder()
-      .setColor('#5865F2')
-      .setTitle('📚 Commandes disponibles')
-      .setDescription('Liste de toutes les commandes du bot')
-      .addFields(
-        { name: '🎮 Jeux', value: '`!pen <montant> <direction>` - Penalty ⚽\n`!chifoumi <montant> <choix>` - Pierre-papier-ciseaux ✊', inline: false },
-        { name: '💰 Économie', value: '`!daily` - Récompense quotidienne (100 rios)\n`!work` - Travailler pour gagner des rios\n`!give @user <montant>` - Donner des rios\n`!toprios` - Top 10 des plus riches\n`!shop` - Boutique\n`!buy <n>` - Acheter', inline: false },
-        { name: '📊 Profil', value: '`!profil` / `!stats` - Voir ton profil\n`!top` / `!leaderboard` - Classement', inline: false }
-      )
-      .setFooter({ text: 'Utilise les commandes pour interagir avec le bot !' })
-      .setTimestamp();
-    
-    if (message.member.permissions.has(PermissionFlagsBits.BanMembers)) {
-      embed.addFields({ name: '🔨 Modération', value: '`!ban @user [raison]` - Bannir\n`!kick @user [raison]` - Expulser' });
-    }
-    
-    if (message.member.permissions.has(PermissionFlagsBits.ModerateMembers)) {
-      embed.addFields({ 
-        name: '🔇 Mute', 
-        value: '`!mute @user [raison]` - Mute permanent\n`!tempmute @user <durée> [raison]` - Mute temporaire\n`!unmute @user` - Démute' 
-      });
-    }
-    
-    if (message.author.id === CONFIG.OWNER_ID) {
-      embed.addFields({ 
-        name: '👑 Owner', 
-        value: '`!say <message>` - Envoyer un message\n`!sayembed <message>` - Envoyer un embed' 
-      });
-    }
-    
-    return message.reply({ embeds: [embed] });
+  // !help (VERSION COMPLÈTE MISE À JOUR)
+if (message.content.toLowerCase() === '!help' || message.content.toLowerCase() === '!aide') {
+  const embed = new EmbedBuilder()
+    .setColor('#5865F2')
+    .setTitle('📚 Commandes disponibles')
+    .setDescription('Liste de toutes les commandes du bot Rio')
+    .addFields(
+      { 
+        name: '🎮 Jeux', 
+        value: '`!pen <montant> <direction>` - Penalty ⚽\n`!chifoumi <montant> <choix>` - Pierre-papier-ciseaux ✊', 
+        inline: false 
+      },
+      { 
+        name: '💰 Économie', 
+        value: '`!daily` - Récompense quotidienne (100 rios)\n`!work` - Travailler pour gagner des rios\n`!give @user <montant>` - Donner des rios\n`!toprios` - Top 10 des plus riches\n`!shop` - Boutique\n`!buy <n>` - Acheter', 
+        inline: false 
+      },
+      { 
+        name: '📊 Profil & Stats', 
+        value: '`!profil` / `!stats` - Voir ton profil\n`!memberinfo [@user]` - Infos sur un membre\n`!serverstats` - Stats du serveur\n`!top` / `!leaderboard` - Classement général', 
+        inline: false 
+      },
+      { 
+        name: '🎤 Vocal', 
+        value: '`!voicestats [@user]` - Stats vocales\n`!topvoice` - Classement vocal', 
+        inline: false 
+      }
+    )
+    .setFooter({ text: 'Utilise les commandes pour interagir avec le bot !' })
+    .setTimestamp();
+  
+  // Modération
+  if (message.member.permissions.has(PermissionFlagsBits.ModerateMembers)) {
+    embed.addFields({ 
+      name: '🔨 Modération', 
+      value: '`!warn @user <raison>` - Avertir\n`!warnings @user` - Voir les warns\n`!clearwarns @user` - Supprimer les warns\n`!clear <nombre>` - Supprimer messages\n`!lock` / `!unlock` - Verrouiller salon\n`!slowmode <secondes>` - Activer slowmode\n`!ban @user [raison]` - Bannir\n`!kick @user [raison]` - Expulser\n`!mute @user [raison]` - Mute\n`!tempmute @user <durée>` - Mute temporaire\n`!unmute @user` - Démute' 
+    });
   }
+  
+  // Owner
+  if (message.author.id === CONFIG.OWNER_ID) {
+    embed.addFields({ 
+      name: '👑 Owner', 
+      value: '`!say <message>` - Envoyer message\n`!sayembed <message>` - Envoyer embed' 
+    });
+  }
+  
+  return message.reply({ embeds: [embed] });
+}
   
   // !leaderboard
   if (message.content.toLowerCase() === '!leaderboard' || message.content.toLowerCase() === '!top') {
@@ -1749,6 +2266,284 @@ client.on('messageCreate', async (message) => {
     await reply.edit(checks.join('\n'));
     return;
   }
+
+  // !warn - Avertir un membre
+if (message.content.startsWith('!warn ')) {
+  if (!message.member.permissions.has(PermissionFlagsBits.ModerateMembers)) {
+    return message.reply('❌ Permission refusée.');
+  }
+  
+  const args = message.content.split(' ');
+  const userMention = message.mentions.members.first();
+  
+  if (!userMention || args.length < 3) {
+    return message.reply('❌ Usage: `!warn @user <raison>`\nEx: `!warn @user Spam`');
+  }
+  
+  if (userMention.id === message.author.id) {
+    return message.reply('❌ Tu ne peux pas te warn toi-même !');
+  }
+  
+  if (userMention.permissions.has(PermissionFlagsBits.Administrator)) {
+    return message.reply('❌ Tu ne peux pas warn un administrateur !');
+  }
+  
+  const reason = args.slice(2).join(' ');
+  
+  // Initialiser les warns si nécessaire
+  if (!database.warns[userMention.id]) {
+    database.warns[userMention.id] = [];
+  }
+  
+  // Ajouter le warn
+  const warnData = {
+    id: database.warns[userMention.id].length + 1,
+    moderator: message.author.id,
+    reason: reason,
+    timestamp: Date.now()
+  };
+  
+  database.warns[userMention.id].push(warnData);
+  saveDatabase();
+  
+  const warnCount = database.warns[userMention.id].length;
+  
+  const embed = new EmbedBuilder()
+    .setColor('#FFA500')
+    .setTitle('⚠️ Avertissement')
+    .setDescription(`${userMention} a reçu un avertissement !`)
+    .addFields(
+      { name: '📝 Raison', value: reason, inline: false },
+      { name: '👮 Modérateur', value: `${message.author}`, inline: true },
+      { name: '📊 Total warns', value: `**${warnCount}**`, inline: true }
+    )
+    .setFooter({ text: `Warn #${warnData.id} | ${warnCount >= 3 ? 'ATTENTION: 3 warns ou plus !' : ''}` })
+    .setTimestamp();
+  
+  // Envoyer dans le salon
+  await message.reply({ embeds: [embed] });
+  
+  // MP au membre averti
+  try {
+    const dmEmbed = new EmbedBuilder()
+      .setColor('#FFA500')
+      .setTitle('⚠️ Tu as reçu un avertissement')
+      .setDescription(`Sur le serveur **${message.guild.name}**`)
+      .addFields(
+        { name: '📝 Raison', value: reason },
+        { name: '📊 Total warnings', value: `${warnCount}` }
+      )
+      .setFooter({ text: 'Respecte les règles pour éviter les sanctions' })
+      .setTimestamp();
+    
+    await userMention.send({ embeds: [dmEmbed] });
+  } catch {
+    message.channel.send('⚠️ Impossible d\'envoyer un MP au membre.');
+  }
+  
+  // Actions automatiques selon le nombre de warns
+  if (warnCount === 3) {
+    try {
+      await userMention.timeout(60 * 60 * 1000, 'Mute automatique (3 warns)');
+      message.channel.send(`🔇 ${userMention} a été mute 1h automatiquement (3 warns).`);
+    } catch {}
+  } else if (warnCount === 5) {
+    try {
+      await userMention.kick('Kick automatique (5 warns)');
+      message.channel.send(`👢 ${userMention.user.tag} a été kick automatiquement (5 warns).`);
+    } catch {}
+  }
+  
+  return;
+}
+
+// !warnings - Voir les warns d'un membre
+if (message.content.startsWith('!warnings ') || message.content.startsWith('!warns ')) {
+  if (!message.member.permissions.has(PermissionFlagsBits.ModerateMembers)) {
+    return message.reply('❌ Permission refusée.');
+  }
+  
+  const userMention = message.mentions.members.first();
+  
+  if (!userMention) {
+    return message.reply('❌ Usage: `!warnings @user`');
+  }
+  
+  const userWarns = database.warns[userMention.id] || [];
+  
+  if (userWarns.length === 0) {
+    return message.reply(`✅ ${userMention} n'a aucun avertissement.`);
+  }
+  
+  let warnsText = '';
+  userWarns.forEach(warn => {
+    const date = new Date(warn.timestamp).toLocaleDateString('fr-FR');
+    const moderator = `<@${warn.moderator}>`;
+    warnsText += `**#${warn.id}** - <t:${Math.floor(warn.timestamp / 1000)}:R>\n📝 ${warn.reason}\n👮 Par ${moderator}\n\n`;
+  });
+  
+  const embed = new EmbedBuilder()
+    .setColor('#FFA500')
+    .setTitle(`⚠️ Avertissements de ${userMention.user.username}`)
+    .setDescription(warnsText)
+    .setFooter({ text: `Total: ${userWarns.length} avertissement(s)` })
+    .setTimestamp();
+  
+  return message.reply({ embeds: [embed] });
+}
+
+// !clearwarns - Effacer les warns d'un membre
+if (message.content.startsWith('!clearwarns ')) {
+  if (!message.member.permissions.has(PermissionFlagsBits.Administrator)) {
+    return message.reply('❌ Permission refusée (Admin uniquement).');
+  }
+  
+  const userMention = message.mentions.members.first();
+  
+  if (!userMention) {
+    return message.reply('❌ Usage: `!clearwarns @user`');
+  }
+  
+  const warnCount = database.warns[userMention.id]?.length || 0;
+  
+  if (warnCount === 0) {
+    return message.reply(`ℹ️ ${userMention} n'a aucun warn à supprimer.`);
+  }
+  
+  delete database.warns[userMention.id];
+  saveDatabase();
+  
+  return message.reply(`✅ Tous les warns de ${userMention} ont été supprimés (${warnCount} warns).`);
+}
+
+// !delwarn - Supprimer un warn spécifique
+if (message.content.startsWith('!delwarn ')) {
+  if (!message.member.permissions.has(PermissionFlagsBits.Administrator)) {
+    return message.reply('❌ Permission refusée (Admin uniquement).');
+  }
+  
+  const args = message.content.split(' ');
+  const userMention = message.mentions.members.first();
+  const warnId = parseInt(args[2]);
+  
+  if (!userMention || !warnId) {
+    return message.reply('❌ Usage: `!delwarn @user <ID>`\nEx: `!delwarn @user 2`');
+  }
+  
+  if (!database.warns[userMention.id]) {
+    return message.reply(`❌ ${userMention} n'a aucun warn.`);
+  }
+  
+  const warnIndex = database.warns[userMention.id].findIndex(w => w.id === warnId);
+  
+  if (warnIndex === -1) {
+    return message.reply(`❌ Warn #${warnId} introuvable pour ${userMention}.`);
+  }
+  
+  database.warns[userMention.id].splice(warnIndex, 1);
+  
+  // Si plus de warns, supprimer l'entrée
+  if (database.warns[userMention.id].length === 0) {
+    delete database.warns[userMention.id];
+  }
+  
+  saveDatabase();
+  
+  return message.reply(`✅ Warn #${warnId} de ${userMention} supprimé.`);
+}
+
+// !clear - Supprimer des messages
+if (message.content.startsWith('!clear ')) {
+  if (!message.member.permissions.has(PermissionFlagsBits.ManageMessages)) {
+    return message.reply('❌ Permission refusée.');
+  }
+  
+  const amount = parseInt(message.content.split(' ')[1]);
+  
+  if (isNaN(amount) || amount < 1 || amount > 100) {
+    return message.reply('❌ Usage: `!clear <nombre>`\nMax: 100 messages');
+  }
+  
+  try {
+    const deleted = await message.channel.bulkDelete(amount + 1, true);
+    const reply = await message.channel.send(`🗑️ ${deleted.size - 1} message(s) supprimé(s) !`);
+    
+    setTimeout(() => reply.delete().catch(() => {}), 3000);
+  } catch (error) {
+    return message.reply('❌ Erreur lors de la suppression. (Messages trop anciens ?)');
+  }
+  
+  return;
+}
+
+// !lock - Verrouiller un salon
+if (message.content.toLowerCase() === '!lock') {
+  if (!message.member.permissions.has(PermissionFlagsBits.ManageChannels)) {
+    return message.reply('❌ Permission refusée.');
+  }
+  
+  try {
+    await message.channel.permissionOverwrites.edit(message.guild.id, {
+      SendMessages: false
+    });
+    
+    const embed = new EmbedBuilder()
+      .setColor('#FF0000')
+      .setDescription('🔒 Ce salon a été verrouillé par ' + message.author)
+      .setTimestamp();
+    
+    return message.reply({ embeds: [embed] });
+  } catch {
+    return message.reply('❌ Erreur lors du verrouillage.');
+  }
+}
+
+// !unlock - Déverrouiller un salon
+if (message.content.toLowerCase() === '!unlock') {
+  if (!message.member.permissions.has(PermissionFlagsBits.ManageChannels)) {
+    return message.reply('❌ Permission refusée.');
+  }
+  
+  try {
+    await message.channel.permissionOverwrites.edit(message.guild.id, {
+      SendMessages: null
+    });
+    
+    const embed = new EmbedBuilder()
+      .setColor('#00FF00')
+      .setDescription('🔓 Ce salon a été déverrouillé par ' + message.author)
+      .setTimestamp();
+    
+    return message.reply({ embeds: [embed] });
+  } catch {
+    return message.reply('❌ Erreur lors du déverrouillage.');
+  }
+}
+
+// !slowmode - Activer le slowmode
+if (message.content.startsWith('!slowmode ')) {
+  if (!message.member.permissions.has(PermissionFlagsBits.ManageChannels)) {
+    return message.reply('❌ Permission refusée.');
+  }
+  
+  const seconds = parseInt(message.content.split(' ')[1]);
+  
+  if (isNaN(seconds) || seconds < 0 || seconds > 21600) {
+    return message.reply('❌ Usage: `!slowmode <secondes>`\nMax: 21600s (6h)\nUtilise 0 pour désactiver');
+  }
+  
+  try {
+    await message.channel.setRateLimitPerUser(seconds);
+    
+    if (seconds === 0) {
+      return message.reply('✅ Slowmode désactivé.');
+    } else {
+      return message.reply(`✅ Slowmode activé: **${seconds}s** entre chaque message.`);
+    }
+  } catch {
+    return message.reply('❌ Erreur lors de la modification du slowmode.');
+  }
+}
 });
 
 // Serveur web pour Render (empêche la mise en veille)
