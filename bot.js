@@ -2369,8 +2369,6 @@ if (message.content.startsWith('!delwarn ')) {
   return message.reply(`✅ Warn #${warnId} de ${userMention} supprimé.`);
 }
 
-Ah je vois le problème ! Discord a une limitation : on ne peut supprimer que 100 messages maximum par requête, mais il faut parfois faire plusieurs requêtes pour les gros nombres.
-Voici le code corrigé qui fonctionne pour tous les nombres :
 javascript// !clear - Supprimer des messages (VERSION CORRIGÉE)
 if (message.content.startsWith('!clear ')) {
   if (!message.member.permissions.has(PermissionFlagsBits.ManageMessages)) {
