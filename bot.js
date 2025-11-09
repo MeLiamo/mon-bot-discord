@@ -371,7 +371,7 @@ client.once('ready', () => {
     const bumpChannel = client.channels.cache.get(CONFIG.BUMP_CHANNEL_ID);
     
     if (bumpChannel) {
-      bumpChannel.send('!bump')
+      bumpChannel.send('/bump')
         .then(() => console.log('✅ Bump automatique envoyé'))
         .catch(err => console.error('❌ Erreur bump:', err));
     } else {
@@ -384,7 +384,7 @@ client.once('ready', () => {
     const bumpChannel = client.channels.cache.get(CONFIG.BUMP_CHANNEL_ID);
     
     if (bumpChannel) {
-      bumpChannel.send('!bump')
+      bumpChannel.send('/bump')
         .then(() => console.log('✅ Premier bump envoyé'))
         .catch(err => console.error('❌ Erreur premier bump:', err));
     }
