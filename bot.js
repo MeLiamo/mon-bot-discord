@@ -32,6 +32,7 @@ const CONFIG = {
   BOT_COMMANDS_CHANNEL_ID: process.env.BOT_COMMANDS_CHANNEL_ID,
   GAMES_CHANNEL_ID: process.env.GAMES_CHANNEL_ID,
   LEADERBOARD_CHANNEL_ID: process.env.LEADERBOARD_CHANNEL_ID,
+  BUMP_CHANNEL_ID: process.env.BUMP_CHANNEL_ID,
   XP_PER_MESSAGE: 15,
   XP_COOLDOWN: 60000,
   WELCOME_BUTTON_REWARD: 3,
@@ -364,6 +365,30 @@ client.once('ready', () => {
       updateLeaderboard(guild);
     });
   }, 60000);
+
+  // Auto-bump toutes les 2 heures
+  setInterval(() => {
+    const bumpChannel = client.channels.cache.get(CONFIG.BUMP_CHANNEL_ID);
+    
+    if (bumpChannel) {
+      bumpChannel.send('!bump')
+        .then(() => console.log('✅ Bump automatique envoyé'))
+        .catch(err => console.error('❌ Erreur bump:', err));
+    } else {
+      console.error('❌ Salon de bump introuvable');
+    }
+  }, 2 * 60 * 60 * 1000); // 2 heures en millisecondes
+  
+  // Premier bump après 5 secondes (au démarrage du bot)
+  setTimeout(() => {
+    const bumpChannel = client.channels.cache.get(CONFIG.BUMP_CHANNEL_ID);
+    
+    if (bumpChannel) {
+      bumpChannel.send('!bump')
+        .then(() => console.log('✅ Premier bump envoyé'))
+        .catch(err => console.error('❌ Erreur premier bump:', err));
+    }
+  }, 5000);
 });
 
 async function setupStatsChannels(guild) {
