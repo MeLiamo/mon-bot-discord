@@ -234,72 +234,6 @@ async function updateLeaderboard(guild) {
   }
 }
 
-async function randomRioDrop(guild) {
-  try {
-    // Choisir un salon textuel aléatoire (exclure tickets, commandes bot, etc.)
-    const textChannels = guild.channels.cache.filter(c => 
-      c.type === 0 && 
-      c.id !== CONFIG.BOT_COMMANDS_CHANNEL_ID &&
-      c.id !== CONFIG.TICKET_CHANNEL_ID &&
-      c.id !== CONFIG.WELCOME_CHANNEL_ID &&
-      c.id !== CONFIG.LEADERBOARD_CHANNEL_ID &&
-      !c.name.includes('ticket')
-    );
-    
-    if (textChannels.size === 0) return;
-    
-    const randomChannel = textChannels.random();
-    const dropAmount = Math.floor(Math.random() * 100) + 50; // Entre 50 et 150 rios
-    
-    const embed = new EmbedBuilder()
-      .setColor('#FFD700')
-      .setTitle('💰 PLUIE DE RIOS !')
-      .setDescription(`**${dropAmount} rios** viennent d'apparaître !\n\n🎯 **Premier à réagir avec 💰 gagne tout !**`)
-      .setFooter({ text: 'Sois rapide !' })
-      .setTimestamp();
-    
-    const dropMessage = await randomChannel.send({ embeds: [embed] });
-    await dropMessage.react('💰');
-    
-    console.log(`💰 Drop de ${dropAmount} rios dans #${randomChannel.name}`);
-    
-    // Attendre une réaction
-    const filter = (reaction, user) => reaction.emoji.name === '💰' && !user.bot;
-    
-    const collector = dropMessage.createReactionCollector({ filter, max: 1, time: 60000 });
-    
-    collector.on('collect', async (reaction, user) => {
-      initUser(user.id);
-      database.users[user.id].rios += dropAmount;
-      saveDatabase();
-      
-      const winEmbed = new EmbedBuilder()
-        .setColor('#00FF00')
-        .setTitle('🎉 RIOS RÉCUPÉRÉS !')
-        .setDescription(`${user} a récupéré **${dropAmount} rios** !\n\n💰 Nouveau solde : **${database.users[user.id].rios} rios**`)
-        .setTimestamp();
-      
-      await randomChannel.send({ embeds: [winEmbed] });
-      console.log(`✅ ${user.username} a gagné le drop de ${dropAmount} rios`);
-    });
-    
-    collector.on('end', collected => {
-      if (collected.size === 0) {
-        const expiredEmbed = new EmbedBuilder()
-          .setColor('#FF0000')
-          .setDescription('⏰ Personne n\'a récupéré les rios... Ils ont disparu !')
-          .setTimestamp();
-        
-        randomChannel.send({ embeds: [expiredEmbed] });
-        console.log('❌ Drop expiré, personne n\'a réagi');
-      }
-    });
-    
-  } catch (error) {
-    console.error('Erreur drop aléatoire:', error);
-  }
-}
-
 async function setupLeaderboard(guild) {
   const leaderboardChannel = guild.channels.cache.get(CONFIG.LEADERBOARD_CHANNEL_ID);
   if (!leaderboardChannel) {
@@ -428,23 +362,6 @@ client.once('ready', () => {
       updateLeaderboard(guild);
     });
   }, 60000);
-
-  // Drop aléatoire de rios toutes les 30-60 minutes
-  setInterval(() => {
-    client.guilds.cache.forEach(guild => {
-      // 50% de chance à chaque interval
-      if (Math.random() < 0.5) {
-        randomRioDrop(guild);
-      }
-    });
-  }, 1800000); // 30 minutes
-  
-  // Premier drop après 10 minutes
-  setTimeout(() => {
-    client.guilds.cache.forEach(guild => {
-      randomRioDrop(guild);
-    });
-  }, 600000);
 });
 
 async function setupStatsChannels(guild) {
@@ -2452,7 +2369,9 @@ if (message.content.startsWith('!delwarn ')) {
   return message.reply(`✅ Warn #${warnId} de ${userMention} supprimé.`);
 }
 
-// !clear - Supprimer des messages
+Ah je vois le problème ! Discord a une limitation : on ne peut supprimer que 100 messages maximum par requête, mais il faut parfois faire plusieurs requêtes pour les gros nombres.
+Voici le code corrigé qui fonctionne pour tous les nombres :
+javascript// !clear - Supprimer des messages (VERSION CORRIGÉE)
 if (message.content.startsWith('!clear ')) {
   if (!message.member.permissions.has(PermissionFlagsBits.ManageMessages)) {
     return message.reply('❌ Permission refusée.');
@@ -2460,17 +2379,42 @@ if (message.content.startsWith('!clear ')) {
   
   const amount = parseInt(message.content.split(' ')[1]);
   
-  if (isNaN(amount) || amount < 1 || amount > 100) {
-    return message.reply('❌ Usage: `!clear <nombre>`\nMax: 100 messages');
+  if (isNaN(amount) || amount < 1 || amount > 1000) {
+    return message.reply('❌ Usage: `!clear <nombre>`\nMax: 1000 messages');
   }
   
   try {
-    const deleted = await message.channel.bulkDelete(amount + 1, true);
-    const reply = await message.channel.send(`🗑️ ${deleted.size - 1} message(s) supprimé(s) !`);
+    // Supprimer le message de commande d'abord
+    await message.delete().catch(() => {});
     
-    setTimeout(() => reply.delete().catch(() => {}), 3000);
+    let totalDeleted = 0;
+    let remainingToDelete = amount;
+    
+    // Supprimer par lots de 100 maximum
+    while (remainingToDelete > 0) {
+      const toDelete = Math.min(remainingToDelete, 100);
+      
+      const deleted = await message.channel.bulkDelete(toDelete, true);
+      totalDeleted += deleted.size;
+      remainingToDelete -= deleted.size;
+      
+      // Si moins de messages supprimés que demandés, c'est qu'il n'y en a plus
+      if (deleted.size < toDelete) {
+        break;
+      }
+      
+      // Petite pause entre les lots pour éviter les rate limits
+      if (remainingToDelete > 0) {
+        await new Promise(resolve => setTimeout(resolve, 1000));
+      }
+    }
+    
+    const reply = await message.channel.send(`🗑️ **${totalDeleted} message(s) supprimé(s) !**`);
+    
+    setTimeout(() => reply.delete().catch(() => {}), 5000);
   } catch (error) {
-    return message.reply('❌ Erreur lors de la suppression. (Messages trop anciens ?)');
+    console.error('Erreur clear:', error);
+    return message.channel.send('❌ Erreur lors de la suppression. (Messages trop anciens ou permissions insuffisantes)');
   }
   
   return;
