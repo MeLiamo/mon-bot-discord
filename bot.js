@@ -13,6 +13,8 @@ const client = new Client({
   ]
 });
 
+const clearCooldowns = new Set();
+
 // Configuration
 const CONFIG = {
   TOKEN: process.env.TOKEN,
@@ -2369,10 +2371,20 @@ if (message.content.startsWith('!delwarn ')) {
   return message.reply(`✅ Warn #${warnId} de ${userMention} supprimé.`);
 }
 
-javascript// !clear - Supprimer des messages (VERSION CORRIGÉE)
+// Créer un Set pour stocker les cooldowns (ajoute ça en haut avec les autres variables globales)
+const clearCooldowns = new Set();
+
+// !clear - Supprimer des messages (VERSION AVEC COOLDOWN)
 if (message.content.startsWith('!clear ')) {
   if (!message.member.permissions.has(PermissionFlagsBits.ManageMessages)) {
     return message.reply('❌ Permission refusée.');
+  }
+  
+  // Vérifier le cooldown
+  if (clearCooldowns.has(message.channel.id)) {
+    return message.reply('⏰ Attends quelques secondes avant de réutiliser `!clear` dans ce salon !').then(msg => {
+      setTimeout(() => msg.delete().catch(() => {}), 3000);
+    });
   }
   
   const amount = parseInt(message.content.split(' ')[1]);
@@ -2382,6 +2394,9 @@ if (message.content.startsWith('!clear ')) {
   }
   
   try {
+    // Ajouter le cooldown AVANT de commencer
+    clearCooldowns.add(message.channel.id);
+    
     // Supprimer le message de commande d'abord
     await message.delete().catch(() => {});
     
@@ -2410,8 +2425,18 @@ if (message.content.startsWith('!clear ')) {
     const reply = await message.channel.send(`🗑️ **${totalDeleted} message(s) supprimé(s) !**`);
     
     setTimeout(() => reply.delete().catch(() => {}), 5000);
+    
+    // Retirer le cooldown après 3 secondes
+    setTimeout(() => {
+      clearCooldowns.delete(message.channel.id);
+    }, 1000);
+    
   } catch (error) {
     console.error('Erreur clear:', error);
+    
+    // Retirer le cooldown en cas d'erreur
+    clearCooldowns.delete(message.channel.id);
+    
     return message.channel.send('❌ Erreur lors de la suppression. (Messages trop anciens ou permissions insuffisantes)');
   }
   
